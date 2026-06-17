@@ -8,13 +8,13 @@
 
 - 可用的网络出口
 - 可被 `x.ai` 接受的临时邮箱域名
-- 可接收 token 的下游 sink，例如 `grok2api`
+- 本地账号管理能力
 
 只有这 3 段都准备好，项目才会真正跑通。
 
 其中：
 
-- `warp` 和 `grok2api` 已经内置在本仓库的 `docker compose` 里
+- `warp` 已经内置在本仓库的 `docker compose` 里
 - 你第一次部署时主要还需要自己准备临时邮箱 API
 - 临时邮箱接口长什么样，直接看 [temp-mail-api.md](temp-mail-api.md)
 
@@ -26,7 +26,7 @@
 - `Xvfb`
 - 可用的 WARP / 代理桥接
 - 一个可用的临时邮箱 API
-- 一个可写入的 `grok2api` 兼容 sink
+- 本地账号库
 
 ## 2. 安装依赖
 
@@ -69,7 +69,7 @@ docker compose up -d --build
 说明：
 
 - 这个 Compose 会把控制台、浏览器和 Python 运行环境一起起起来
-- 它也会把 `warp` 和 `grok2api` 一起起起来
+- 它也会把 `warp` 一起起起来
 - 所以首次部署时，你主要需要在控制台里补全临时邮箱相关参数
 
 ## 4. 准备运行配置
@@ -98,10 +98,8 @@ cp config.example.json config.json
 
 - `browser_proxy`
 - `proxy`
-- `api.endpoint`
-- `api.token`
 
-通常不需要手工再改，因为控制台会默认指向内置的 `warp` 和 `grok2api`。
+通常不需要手工再改，因为控制台会默认指向内置的 `warp`。
 
 ## 5. 先做一次命令行验证
 

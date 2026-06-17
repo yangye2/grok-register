@@ -105,6 +105,93 @@ body {
   gap: 14px;
 }
 
+.accounts-layout {
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr);
+  gap: 16px;
+}
+
+.accounts-list {
+  display: grid;
+  gap: 10px;
+  max-height: 580px;
+  overflow: auto;
+}
+
+.account-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) auto;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.account-row.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(180, 71, 43, 0.12);
+}
+
+.account-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.account-detail {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #fff;
+  padding: 16px;
+}
+
+.account-detail.empty {
+  min-height: 220px;
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+}
+
+.account-detail h3 {
+  margin: 6px 0 0;
+  font-size: 20px;
+}
+
+.account-detail-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.account-fields {
+  margin-bottom: 14px;
+}
+
+.account-token-block {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.account-token-block pre {
+  margin: 10px 0 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: #f8f4ec;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .health-card {
   background: #fff;
   border: 1px solid var(--line);

@@ -68,20 +68,6 @@
             <small>如果你的邮箱 API 还要求额外站点鉴权，就填这里。</small>
             <input name="temp_mail_site_password" placeholder="optional">
           </label>
-          <label>
-            <span>Token 上传接口</span>
-            <small>注册成功后，SSO token 推送到哪个接口。</small>
-            <input name="api_endpoint" placeholder="http://127.0.0.1:8000/v1/admin/tokens">
-          </label>
-          <label>
-            <span>API Token</span>
-            <small>推送 token 到下游接口时使用的管理口令。</small>
-            <input name="api_token" placeholder="bearer token">
-          </label>
-          <label class="checkbox-row">
-            <input name="api_append" type="checkbox" checked>
-            <span>追加写入 token</span>
-          </label>
           <div class="form-actions full">
             <button class="button" type="submit">保存默认配置</button>
             <div id="settingsMessage" class="form-message"></div>
@@ -94,7 +80,7 @@
           <div>
             <div class="eyebrow">Health Check</div>
             <h2>环境健康检查</h2>
-            <p class="panel-desc">启动后直接检查 `warp / grok2api / temp mail / x.ai` 四段是否可达。这里使用当前系统默认配置做连通性探测。</p>
+            <p class="panel-desc">启动后直接检查 `warp / temp mail / x.ai` 三段是否可达。这里使用当前系统默认配置做连通性探测。</p>
           </div>
           <button id="healthRefreshBtn" class="button button-secondary" type="button">重新检测</button>
         </div>
@@ -157,20 +143,6 @@
               <small>只有这个任务要额外站点鉴权时再填。</small>
               <input name="temp_mail_site_password" placeholder="留空则用系统默认">
             </label>
-            <label>
-              <span>Token 上传接口覆盖</span>
-              <small>当前任务把 token 推到另一套服务时再填。</small>
-              <input name="api_endpoint" placeholder="留空则用系统默认">
-            </label>
-            <label>
-              <span>API Token 覆盖</span>
-              <small>当前任务临时改管理口令时再填。</small>
-              <input name="api_token" placeholder="留空则用系统默认">
-            </label>
-            <label class="checkbox-row">
-              <input name="api_append" type="checkbox">
-              <span>勾选时覆盖为追加写入</span>
-            </label>
           </div>
           <div class="form-actions full">
             <button class="button" type="submit">创建任务</button>
@@ -218,6 +190,22 @@
           <button id="toggleMailBtn" class="button button-secondary" type="button">展开临时邮箱参数</button>
         </div>
         <div id="detailMeta" class="detail-grid hidden"></div>
+      </section>
+
+      <section class="panel panel-accounts">
+        <div class="panel-head">
+          <div>
+            <div class="eyebrow">Account Store</div>
+            <h2>注册账号管理</h2>
+            <p class="panel-desc">成功注册后的邮箱、密码和 sso 会进入本地账号库，不再直接推送到外部服务。</p>
+          </div>
+          <button id="accountsRefreshBtn" class="button button-secondary" type="button">刷新账号</button>
+        </div>
+        <div id="accountsMeta" class="health-meta">等待加载</div>
+        <div class="accounts-layout">
+          <div id="accountsList" class="accounts-list"></div>
+          <div id="accountDetail" class="account-detail empty">选择账号后显示详情</div>
+        </div>
       </section>
     </main>
   </div>

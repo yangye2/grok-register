@@ -47,4 +47,13 @@ COPY apps/console/requirements.txt /tmp/console-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/console-requirements.txt
 
-CMD ["bash"]
+COPY . /workspace
+
+ENV GROK_REGISTER_SOURCE_DIR=/workspace \
+    GROK_REGISTER_PYTHON=/usr/local/bin/python \
+    GROK_REGISTER_CONSOLE_HOST=0.0.0.0 \
+    GROK_REGISTER_CONSOLE_PORT=18600
+
+EXPOSE 18600
+
+CMD ["python", "/workspace/apps/console/app.py"]

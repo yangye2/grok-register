@@ -55,7 +55,6 @@ LINE_RE_SUCCESS = re.compile(r"注册成功\s*\|\s*email=([^|\s]+)")
 LINE_RE_ERROR = re.compile(r"\[Error\]\s*第\s*(\d+)\s*轮失败:\s*(.+)")
 LINE_RE_TEMP_EMAIL = re.compile(r"临时邮箱创建成功:\s*([^\s]+)")
 LINE_RE_FILLED_EMAIL = re.compile(r"已填写邮箱并点击注册:\s*([^\s]+)")
-LINE_RE_PUSH = re.compile(r"SSO token 已推送到 API")
 
 db_lock = threading.RLock()
 
@@ -131,6 +130,21 @@ def init_db() -> None:
                 finished_at TEXT,
                 exit_code INTEGER
             );
+
+            CREATE TABLE IF NOT EXISTS accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                task_name TEXT NOT NULL,
+                email TEXT NOT NULL,
+                sso TEXT NOT NULL,
+                given_name TEXT,
+                family_name TEXT,
+                password TEXT,
+                source_file TEXT,
+                created_at TEXT NOT NULL,
+                imported_at TEXT NOT NULL,
+                UNIQUE(task_id, email, sso)
+            );
             """
         )
 
@@ -152,8 +166,8 @@ def load_source_defaults() -> dict[str, Any]:
                 "temp_mail_admin_password": "",
                 "temp_mail_domain": "",
                 "temp_mail_site_password": "",
-                "api": {"endpoint": "", "token": "", "append": True},
             }
+    base.pop("api", None)
 
     env_count = os.getenv("GROK_REGISTER_DEFAULT_RUN_COUNT", "").strip()
     if env_count:
@@ -175,19 +189,6 @@ def load_source_defaults() -> dict[str, Any]:
         if value is not None:
             base[key] = value
 
-    api_base = dict(base.get("api") or {})
-    api_env_map = {
-        "endpoint": "GROK_REGISTER_DEFAULT_API_ENDPOINT",
-        "token": "GROK_REGISTER_DEFAULT_API_TOKEN",
-    }
-    for key, env_name in api_env_map.items():
-        value = os.getenv(env_name)
-        if value is not None:
-            api_base[key] = value
-    append_env = os.getenv("GROK_REGISTER_DEFAULT_API_APPEND")
-    if append_env is not None:
-        api_base["append"] = append_env.strip().lower() in {"1", "true", "yes", "on"}
-    base["api"] = api_base
     return base
 
 
@@ -245,8 +246,6 @@ def run_health_checks() -> dict[str, Any]:
 
     browser_proxy = str(defaults.get("browser_proxy", "") or "").strip()
     request_proxy = str(defaults.get("proxy", "") or "").strip()
-    api_conf = dict(defaults.get("api") or {})
-    api_endpoint = str(api_conf.get("endpoint", "") or "").strip()
     temp_mail_api_base = str(defaults.get("temp_mail_api_base", "") or "").strip()
 
     warp_target = browser_proxy or request_proxy
@@ -295,43 +294,6 @@ def run_health_checks() -> dict[str, Any]:
                     "代理出口不可达",
                     f"通过 `{_mask_proxy(warp_target)}` 访问 Cloudflare trace 失败：{exc}",
                     _mask_proxy(warp_target),
-                )
-            )
-
-    if not api_endpoint:
-        items.append(
-            _build_health_item(
-                "grok2api",
-                "grok2api Sink",
-                False,
-                "未配置 token sink",
-                "当前系统默认配置里没有 `api.endpoint`，注册成功后不会自动入池。",
-                "-",
-            )
-        )
-    else:
-        try:
-            response = _request_with_optional_proxy(api_endpoint, timeout=15)
-            ok = response.status_code in {200, 401, 403, 405}
-            items.append(
-                _build_health_item(
-                    "grok2api",
-                    "grok2api Sink",
-                    ok,
-                    f"HTTP {response.status_code}",
-                    "接口已可达。即使返回 401/403，也说明服务本身在线，只是需要正确的管理口令。",
-                    api_endpoint,
-                )
-            )
-        except Exception as exc:
-            items.append(
-                _build_health_item(
-                    "grok2api",
-                    "grok2api Sink",
-                    False,
-                    "接口不可达",
-                    f"访问 `{api_endpoint}` 失败：{exc}",
-                    api_endpoint,
                 )
             )
 
@@ -425,9 +387,6 @@ class TaskCreate(BaseModel):
     temp_mail_admin_password: str | None = None
     temp_mail_domain: str | None = None
     temp_mail_site_password: str | None = None
-    api_endpoint: str | None = None
-    api_token: str | None = None
-    api_append: bool | None = None
     notes: str = ""
 
 
@@ -438,9 +397,6 @@ class SystemSettings(BaseModel):
     temp_mail_admin_password: str = ""
     temp_mail_domain: str = ""
     temp_mail_site_password: str = ""
-    api_endpoint: str = ""
-    api_token: str = ""
-    api_append: bool = True
 
 
 @dataclass
@@ -484,20 +440,12 @@ def merged_defaults() -> dict[str, Any]:
     for key in ("temp_mail_api_base", "temp_mail_admin_password", "temp_mail_domain", "temp_mail_site_password"):
         if key in saved:
             base[key] = str(saved.get(key, ""))
-    api_base = dict(base.get("api") or {})
-    if "api_endpoint" in saved:
-        api_base["endpoint"] = str(saved.get("api_endpoint", ""))
-    if "api_token" in saved:
-        api_base["token"] = str(saved.get("api_token", ""))
-    if "api_append" in saved:
-        api_base["append"] = bool(saved.get("api_append", True))
-    base["api"] = api_base
+    base.pop("api", None)
     return base
 
 
 def build_task_config(payload: TaskCreate) -> dict[str, Any]:
     defaults = merged_defaults()
-    api_defaults = dict(defaults.get("api") or {})
     return {
         "run": {"count": int(payload.count)},
         "proxy": defaults.get("proxy", "") if payload.proxy is None else payload.proxy.strip(),
@@ -506,22 +454,77 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
         "temp_mail_admin_password": defaults.get("temp_mail_admin_password", "") if payload.temp_mail_admin_password is None else payload.temp_mail_admin_password.strip(),
         "temp_mail_domain": defaults.get("temp_mail_domain", "") if payload.temp_mail_domain is None else payload.temp_mail_domain.strip(),
         "temp_mail_site_password": defaults.get("temp_mail_site_password", "") if payload.temp_mail_site_password is None else payload.temp_mail_site_password.strip(),
-        "api": {
-            "endpoint": api_defaults.get("endpoint", "") if payload.api_endpoint is None else payload.api_endpoint.strip(),
-            "token": api_defaults.get("token", "") if payload.api_token is None else payload.api_token.strip(),
-            "append": api_defaults.get("append", True) if payload.api_append is None else bool(payload.api_append),
-        },
     }
 
 
+def account_output_path(row: sqlite3.Row) -> Path:
+    return Path(row["task_dir"]) / "accounts" / f"task_{int(row['id'])}.jsonl"
+
+
+def sync_account_records_for_task(row: sqlite3.Row) -> None:
+    path = account_output_path(row)
+    if not path.exists():
+        return
+
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+
+        email = str(record.get("email") or "").strip()
+        sso = str(record.get("sso") or "").strip()
+        if not email or not sso:
+            continue
+
+        execute_no_return(
+            """
+            INSERT OR IGNORE INTO accounts (
+                task_id, task_name, email, sso, given_name, family_name, password,
+                source_file, created_at, imported_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(row["id"]),
+                str(row["name"]),
+                email,
+                sso,
+                str(record.get("given_name") or ""),
+                str(record.get("family_name") or ""),
+                str(record.get("password") or ""),
+                str(path),
+                str(record.get("created_at") or row["created_at"] or now_iso()),
+                now_iso(),
+            ),
+        )
+
+
+def sync_all_account_records() -> None:
+    rows = fetch_all("SELECT * FROM tasks ORDER BY id ASC")
+    for row in rows:
+        sync_account_records_for_task(row)
+
+
+def account_count_for_task(task_id: int) -> int:
+    row = fetch_one("SELECT COUNT(*) AS c FROM accounts WHERE task_id = ?", (task_id,))
+    return int(row["c"]) if row else 0
+
+
 def serialize_task(row: sqlite3.Row) -> dict[str, Any]:
+    task_id = int(row["id"])
     return {
-        "id": int(row["id"]),
+        "id": task_id,
         "name": row["name"],
         "status": row["status"],
         "target_count": int(row["target_count"]),
         "completed_count": int(row["completed_count"]),
         "failed_count": int(row["failed_count"]),
+        "account_count": account_count_for_task(task_id),
         "current_round": int(row["current_round"]),
         "current_phase": row["current_phase"] or "",
         "last_email": row["last_email"] or "",
@@ -535,6 +538,58 @@ def serialize_task(row: sqlite3.Row) -> dict[str, Any]:
         "exit_code": row["exit_code"],
         "pid": row["pid"],
     }
+
+
+def serialize_account(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "task_id": int(row["task_id"]),
+        "task_name": row["task_name"],
+        "email": row["email"],
+        "sso": row["sso"],
+        "given_name": row["given_name"] or "",
+        "family_name": row["family_name"] or "",
+        "password": row["password"] or "",
+        "source_file": row["source_file"] or "",
+        "created_at": row["created_at"],
+        "imported_at": row["imported_at"],
+    }
+
+
+def remove_account_from_source_file(row: sqlite3.Row) -> None:
+    source_file = str(row["source_file"] or "").strip()
+    if not source_file:
+        return
+
+    path = Path(source_file)
+    if not path.exists() or not path.is_file():
+        return
+
+    email = str(row["email"] or "").strip()
+    sso = str(row["sso"] or "").strip()
+    kept: list[str] = []
+    changed = False
+
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            record = json.loads(stripped)
+        except json.JSONDecodeError:
+            kept.append(line)
+            continue
+        if (
+            isinstance(record, dict)
+            and str(record.get("email") or "").strip() == email
+            and str(record.get("sso") or "").strip() == sso
+        ):
+            changed = True
+            continue
+        kept.append(line)
+
+    if changed:
+        path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
 
 
 def read_log_lines(path: Path, limit: int = 200) -> list[str]:
@@ -572,7 +627,6 @@ def parse_console_state(console_path: Path) -> dict[str, Any]:
         "已填写注册资料并点击完成注册",
         "注册成功",
         "[Error]",
-        "已推送到 API",
     )
 
     for raw_line in lines:
@@ -604,8 +658,6 @@ def parse_console_state(console_path: Path) -> dict[str, Any]:
             state["current_phase"] = "turnstile_solved"
         if "已填写注册资料并点击完成注册" in line:
             state["current_phase"] = "submitting_profile"
-        if LINE_RE_PUSH.search(line):
-            state["current_phase"] = "pushed_to_api"
         if any(token in line for token in interesting):
             state["last_log_at"] = now_iso()
     return state
@@ -615,6 +667,13 @@ def task_row(task_id: int) -> sqlite3.Row:
     row = fetch_one("SELECT * FROM tasks WHERE id = ?", (task_id,))
     if row is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    return row
+
+
+def account_row(account_id: int) -> sqlite3.Row:
+    row = fetch_one("SELECT * FROM accounts WHERE id = ?", (account_id,))
+    if row is None:
+        raise HTTPException(status_code=404, detail="Account not found")
     return row
 
 
@@ -636,6 +695,7 @@ def copy_source_to_task_dir(task_dir: Path, task_config: dict[str, Any]) -> None
         shutil.copytree(src, dst)
     (task_dir / "logs").mkdir(exist_ok=True)
     (task_dir / "sso").mkdir(exist_ok=True)
+    (task_dir / "accounts").mkdir(exist_ok=True)
     (task_dir / "config.json").write_text(
         json.dumps(task_config, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -709,6 +769,7 @@ class TaskSupervisor:
         copy_source_to_task_dir(task_dir, task_config)
 
         output_path = task_dir / "sso" / f"task_{task_id}.txt"
+        account_output_path = task_dir / "accounts" / f"task_{task_id}.jsonl"
         command = [
             str(SOURCE_VENV_PYTHON),
             str(task_dir / "DrissionPage_example.py"),
@@ -716,6 +777,8 @@ class TaskSupervisor:
             str(int(row["target_count"])),
             "--output",
             str(output_path),
+            "--account-output",
+            str(account_output_path),
         ]
         log_handle = console_path.open("a", encoding="utf-8")
         process = subprocess.Popen(
@@ -742,6 +805,7 @@ class TaskSupervisor:
             row = task_row(task_id)
             console_path = Path(row["console_path"])
             parsed = parse_console_state(console_path)
+            sync_account_records_for_task(row)
             execute_no_return(
                 """
                 UPDATE tasks
@@ -805,6 +869,7 @@ supervisor = TaskSupervisor()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    sync_all_account_records()
     supervisor.start()
     try:
         yield
@@ -855,6 +920,30 @@ def get_settings() -> dict[str, Any]:
 def save_settings(payload: SystemSettings) -> dict[str, Any]:
     saved = write_settings(payload)
     return {"settings": saved, "defaults": merged_defaults()}
+
+
+@app.get("/api/accounts")
+def list_accounts(task_id: int | None = Query(None, ge=1)) -> dict[str, Any]:
+    sync_all_account_records()
+    if task_id is None:
+        rows = fetch_all("SELECT * FROM accounts ORDER BY id DESC")
+    else:
+        rows = fetch_all("SELECT * FROM accounts WHERE task_id = ? ORDER BY id DESC", (task_id,))
+    return {"accounts": [serialize_account(row) for row in rows]}
+
+
+@app.get("/api/accounts/{account_id}")
+def get_account(account_id: int) -> dict[str, Any]:
+    sync_all_account_records()
+    return {"account": serialize_account(account_row(account_id))}
+
+
+@app.delete("/api/accounts/{account_id}")
+def delete_account(account_id: int) -> dict[str, Any]:
+    row = account_row(account_id)
+    remove_account_from_source_file(row)
+    execute_no_return("DELETE FROM accounts WHERE id = ?", (account_id,))
+    return {"ok": True}
 
 
 @app.get("/api/tasks")

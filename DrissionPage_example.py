@@ -1,6 +1,7 @@
 from DrissionPage import Chromium, ChromiumOptions
 from DrissionPage.errors import PageDisconnectedError
 import argparse
+import json
 import shutil
 import tempfile
 import datetime
@@ -141,6 +142,8 @@ SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 _sso_dir = os.path.join(os.path.dirname(__file__), "sso")
 _sso_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 DEFAULT_SSO_FILE = os.path.join(_sso_dir, f"sso_{_sso_ts}.txt")
+_account_dir = os.path.join(os.path.dirname(__file__), "accounts")
+DEFAULT_ACCOUNT_FILE = os.path.join(_account_dir, f"accounts_{_sso_ts}.jsonl")
 
 
 def start_browser():
@@ -1072,93 +1075,38 @@ def append_sso_to_txt(sso_value, output_path=DEFAULT_SSO_FILE):
     print(f"[*] 已追加写入 sso 到文件: {output_path}")
 
 
-def push_sso_to_api(new_tokens: list):
-    # 推送 SSO token 到 grok2api 管理接口。
-    # append=false：直接将本次 token 列表全量推送（覆盖）。
-    # append=true（默认）：先 GET 查询线上现有 token，合并本次后全量推送。
-    import json
-    import urllib3
-    import requests
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-    config_path = os.path.join(os.path.dirname(__file__), "config.json")
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            conf = json.load(f)
-    except Exception as e:
-        print(f"[Warn] 读取 config.json 失败，跳过推送: {e}")
+def append_account_to_jsonl(account_record: dict, output_path=DEFAULT_ACCOUNT_FILE):
+    if not output_path:
         return
 
-    api_conf = conf.get("api", {})
-    endpoint = str(api_conf.get("endpoint", "")).strip()
-    api_token = str(api_conf.get("token", "")).strip()
-    append_mode = api_conf.get("append", True)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "a", encoding="utf-8") as file:
+        file.write(json.dumps(account_record, ensure_ascii=False, separators=(",", ":")) + "\n")
 
-    if not endpoint or not api_token:
-        return
+    print(f"[*] 已写入账号记录到文件: {output_path}")
 
-    headers = {
-        "Authorization": f"Bearer {api_token}",
-        "Content-Type": "application/json",
+
+def build_account_record(email: str, sso_value: str, profile: dict) -> dict:
+    return {
+        "email": email,
+        "sso": sso_value,
+        "given_name": profile.get("given_name", ""),
+        "family_name": profile.get("family_name", ""),
+        "password": profile.get("password", ""),
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
     }
 
-    tokens_to_push = [t for t in new_tokens if t]
 
-    if append_mode:
-        try:
-            get_resp = requests.get(endpoint, headers=headers, timeout=15, verify=False)
-            if get_resp.status_code == 200:
-                data = get_resp.json()
-                # 兼容两种响应格式：
-                # 新版: {"tokens": {"ssoBasic": [...]}}
-                # 旧版: {"ssoBasic": [...]}
-                if isinstance(data, dict) and isinstance(data.get("tokens"), dict):
-                    existing = data["tokens"].get("ssoBasic", [])
-                else:
-                    existing = data.get("ssoBasic", []) if isinstance(data, dict) else []
-                existing_tokens = [
-                    item["token"] if isinstance(item, dict) else str(item)
-                    for item in existing if item
-                ]
-                seen = set()
-                deduped = []
-                for t in existing_tokens + tokens_to_push:
-                    if t not in seen:
-                        seen.add(t)
-                        deduped.append(t)
-                tokens_to_push = deduped
-                print(f"[*] 查询到线上 {len(existing_tokens)} 个 token，合并本次 {len(new_tokens)} 个，共 {len(deduped)} 个")
-            else:
-                print(f"[Error] 查询线上 token 失败: HTTP {get_resp.status_code}，放弃推送以保护存量数据")
-                return
-        except Exception as e:
-            print(f"[Error] 查询线上 token 异常: {e}，放弃推送以保护存量数据")
-            return
-
-    try:
-        resp = requests.post(
-            endpoint,
-            json={"ssoBasic": tokens_to_push},
-            headers=headers,
-            timeout=60,
-            verify=False,
-        )
-        if resp.status_code == 200:
-            print(f"[*] SSO token 已推送到 API（共 {len(tokens_to_push)} 个）: {endpoint}")
-        else:
-            print(f"[Warn] 推送 API 返回异常: HTTP {resp.status_code} {resp.text[:200]}")
-    except Exception as e:
-        print(f"[Warn] 推送 API 失败: {e}")
-
-
-def run_single_registration(output_path=DEFAULT_SSO_FILE, extract_numbers=False):
-    # 单轮流程：打开注册页 -> 完成注册 -> 获取 sso -> 写 txt。
+def run_single_registration(output_path=DEFAULT_SSO_FILE, account_output_path=DEFAULT_ACCOUNT_FILE, extract_numbers=False):
+    # 单轮流程：打开注册页 -> 完成注册 -> 获取 sso -> 写本地结果。
     open_signup_page()
     email, dev_token = fill_email_and_submit()
     fill_code_and_submit(email, dev_token)
     profile = fill_profile_and_submit()
     sso_value = wait_for_sso_cookie()
     append_sso_to_txt(sso_value, output_path)
+    account_record = build_account_record(email, sso_value, profile)
+    append_account_to_jsonl(account_record, account_output_path)
 
     if extract_numbers:
         extract_visible_numbers()
@@ -1166,6 +1114,7 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, extract_numbers=False)
     result = {
         "email": email,
         "sso": sso_value,
+        "account": account_record,
         **profile,
     }
 
@@ -1204,14 +1153,14 @@ def main():
 
     config_count = load_run_count()
 
-    parser = argparse.ArgumentParser(description="xAI 自动注册并采集 sso")
+    parser = argparse.ArgumentParser(description="xAI 自动注册并采集本地账号数据")
     parser.add_argument("--count", type=int, default=config_count, help=f"执行轮数，0 表示无限循环（默认读取 config.json run.count，当前 {config_count}）")
     parser.add_argument("--output", default=DEFAULT_SSO_FILE, help="sso 输出 txt 路径")
+    parser.add_argument("--account-output", default=DEFAULT_ACCOUNT_FILE, help="账号数据 JSONL 输出路径")
     parser.add_argument("--extract-numbers", action="store_true", help="注册完成后额外提取页面数字文本")
     args = parser.parse_args()
 
     current_round = 0
-    collected_sso: list = []
     try:
         start_browser()
         while True:
@@ -1223,8 +1172,7 @@ def main():
             round_succeeded = False
 
             try:
-                result = run_single_registration(args.output, extract_numbers=args.extract_numbers)
-                collected_sso.append(result["sso"])
+                run_single_registration(args.output, account_output_path=args.account_output, extract_numbers=args.extract_numbers)
                 round_succeeded = True
             except KeyboardInterrupt:
                 print("\n[Info] 收到中断信号，停止后续轮次。")
@@ -1238,10 +1186,6 @@ def main():
                 time.sleep(2)
 
     finally:
-        if collected_sso:
-            print(f"\n[*] 注册完成，推送 {len(collected_sso)} 个 token 到 API...")
-            push_sso_to_api(collected_sso)
-
         stop_browser()
 
 

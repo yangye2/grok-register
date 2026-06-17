@@ -2,6 +2,8 @@
   const state = {
     tasks: [],
     selectedTaskId: null,
+    accounts: [],
+    selectedAccountId: null,
   };
 
   const taskListEl = document.getElementById("taskList");
@@ -22,6 +24,10 @@
   const advancedFieldsEl = document.getElementById("advancedFields");
   const healthGridEl = document.getElementById("healthGrid");
   const healthMetaEl = document.getElementById("healthMeta");
+  const accountsRefreshBtnEl = document.getElementById("accountsRefreshBtn");
+  const accountsMetaEl = document.getElementById("accountsMeta");
+  const accountsListEl = document.getElementById("accountsList");
+  const accountDetailEl = document.getElementById("accountDetail");
 
   function escapeHtml(value) {
     return String(value || "")
@@ -40,10 +46,6 @@
     settingsFormEl.elements.temp_mail_admin_password.value = defaults.temp_mail_admin_password || "";
     settingsFormEl.elements.temp_mail_domain.value = defaults.temp_mail_domain || "";
     settingsFormEl.elements.temp_mail_site_password.value = defaults.temp_mail_site_password || "";
-    settingsFormEl.elements.api_endpoint.value = defaults.api?.endpoint || "";
-    settingsFormEl.elements.api_token.value = defaults.api?.token || "";
-    settingsFormEl.elements.api_append.checked = defaults.api?.append !== false;
-    formEl.elements.api_append.checked = false;
   }
 
   function statusClass(status) {
@@ -87,6 +89,7 @@
           <span class="${statusClass(task.status)}">${escapeHtml(task.status)}</span>
         </div>
         <div class="task-subrow">执行次数 ${task.target_count}</div>
+        <div class="task-subrow">本地账号 ${task.account_count || 0}</div>
         <div class="task-actions">
           <span class="task-action-hint">点击查看日志</span>
           <button class="button button-danger button-small" type="button" data-delete-task-id="${task.id}">删除</button>
@@ -135,6 +138,7 @@
       ["目标次数", task.target_count],
       ["成功数", task.completed_count],
       ["失败数", task.failed_count],
+      ["账号数", task.account_count || 0],
       ["当前轮次", task.current_round],
       ["当前阶段", task.current_phase || "-"],
     ].map(([label, value]) => `
@@ -164,6 +168,82 @@
         <div class="meta-item-value">${escapeHtml(value)}</div>
       </div>
     `).join("");
+  }
+
+  function renderAccountDetail(account) {
+    if (!account) {
+      accountDetailEl.className = "account-detail empty";
+      accountDetailEl.textContent = "选择账号后显示详情";
+      return;
+    }
+
+    accountDetailEl.className = "account-detail";
+    accountDetailEl.innerHTML = `
+      <div class="account-detail-head">
+        <div>
+          <div class="meta-item-label">当前账号</div>
+          <h3>${escapeHtml(account.email)}</h3>
+        </div>
+        <button class="button button-danger button-small" type="button" data-delete-account-id="${account.id}">删除账号</button>
+      </div>
+      <div class="detail-grid account-fields">
+        ${[
+          ["任务", `#${account.task_id} ${account.task_name || ""}`],
+          ["姓名", `${account.given_name || "-"} ${account.family_name || ""}`.trim() || "-"],
+          ["密码", account.password || "-"],
+          ["创建时间", account.created_at || "-"],
+          ["导入时间", account.imported_at || "-"],
+          ["来源文件", account.source_file || "-"],
+        ].map(([label, value]) => `
+          <div class="meta-item">
+            <div class="meta-item-label">${escapeHtml(label)}</div>
+            <div class="meta-item-value">${escapeHtml(value)}</div>
+          </div>
+        `).join("")}
+      </div>
+      <div class="account-token-block">
+        <div class="meta-item-label">SSO</div>
+        <pre>${escapeHtml(account.sso || "-")}</pre>
+      </div>
+    `;
+
+    accountDetailEl.querySelector("[data-delete-account-id]").addEventListener("click", async () => {
+      const confirmed = window.confirm(`确认删除账号 ${account.email} 吗？`);
+      if (!confirmed) return;
+      await fetchJson(`/api/accounts/${account.id}`, { method: "DELETE" });
+      state.selectedAccountId = null;
+      await refreshAccounts();
+    });
+  }
+
+  function renderAccounts() {
+    accountsMetaEl.textContent = `本地账号 ${state.accounts.length} 个`;
+    if (!state.accounts.length) {
+      accountsListEl.innerHTML = '<div class="empty">暂无账号</div>';
+      renderAccountDetail(null);
+      return;
+    }
+
+    if (!state.selectedAccountId || !state.accounts.some((item) => item.id === state.selectedAccountId)) {
+      state.selectedAccountId = state.accounts[0].id;
+    }
+
+    accountsListEl.innerHTML = state.accounts.map((account) => `
+      <button class="account-row ${account.id === state.selectedAccountId ? "selected" : ""}" type="button" data-account-id="${account.id}">
+        <span>${escapeHtml(account.email)}</span>
+        <span>#${account.task_id} ${escapeHtml(account.task_name || "")}</span>
+        <span>${escapeHtml(account.created_at || "-")}</span>
+      </button>
+    `).join("");
+
+    accountsListEl.querySelectorAll("[data-account-id]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.selectedAccountId = Number(button.dataset.accountId);
+        renderAccounts();
+      });
+    });
+
+    renderAccountDetail(state.accounts.find((item) => item.id === state.selectedAccountId));
   }
 
   async function fetchJson(url, options) {
@@ -216,6 +296,17 @@
     }
   }
 
+  async function refreshAccounts() {
+    try {
+      const data = await fetchJson("/api/accounts");
+      state.accounts = data.accounts || [];
+      renderAccounts();
+    } catch (error) {
+      accountsMetaEl.textContent = `账号加载失败: ${error.message}`;
+      accountsListEl.innerHTML = '<div class="empty">账号加载失败</div>';
+    }
+  }
+
   formEl.addEventListener("submit", async (event) => {
     event.preventDefault();
     const payload = {
@@ -227,9 +318,6 @@
       temp_mail_admin_password: formEl.elements.temp_mail_admin_password.value.trim() || null,
       temp_mail_domain: formEl.elements.temp_mail_domain.value.trim() || null,
       temp_mail_site_password: formEl.elements.temp_mail_site_password.value.trim() || null,
-      api_endpoint: formEl.elements.api_endpoint.value.trim() || null,
-      api_token: formEl.elements.api_token.value.trim() || null,
-      api_append: formEl.elements.api_append.checked ? true : null,
     };
     try {
       const data = await fetchJson("/api/tasks", {
@@ -262,6 +350,7 @@
 
   refreshBtnEl.addEventListener("click", refreshAll);
   healthRefreshBtnEl.addEventListener("click", refreshHealth);
+  accountsRefreshBtnEl.addEventListener("click", refreshAccounts);
 
   settingsFormEl.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -272,9 +361,6 @@
       temp_mail_admin_password: settingsFormEl.elements.temp_mail_admin_password.value.trim(),
       temp_mail_domain: settingsFormEl.elements.temp_mail_domain.value.trim(),
       temp_mail_site_password: settingsFormEl.elements.temp_mail_site_password.value.trim(),
-      api_endpoint: settingsFormEl.elements.api_endpoint.value.trim(),
-      api_token: settingsFormEl.elements.api_token.value.trim(),
-      api_append: settingsFormEl.elements.api_append.checked,
     };
     try {
       const data = await fetchJson("/api/settings", {
@@ -310,7 +396,9 @@
 
   setDefaults();
   refreshHealth();
+  refreshAccounts();
   refreshAll();
   window.setInterval(refreshAll, 2000);
   window.setInterval(refreshHealth, 15000);
+  window.setInterval(refreshAccounts, 5000);
 })();

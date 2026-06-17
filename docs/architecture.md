@@ -32,7 +32,7 @@
 - 提交注册资料
 - 抽取 `sso`
 - 写本地结果
-- 推送到 sink
+- 写账号记录
 
 ### 3. network-gateway
 
@@ -46,17 +46,15 @@
 
 当前一体化部署里，它由根目录 [docker-compose.yml](../docker-compose.yml) 中的 `warp` 服务提供。
 
-### 4. token-sink
+### 4. account-store
 
-位置：[apps/token-sink](../apps/token-sink)
+位置：[apps/console](../apps/console)
 
 职责：
 
-- 接收注册成功后的 token
-- 与 `grok2api` 这类消费端对接
-- 做去重、落池和结果校验
-
-当前一体化部署里，它由根目录 [docker-compose.yml](../docker-compose.yml) 中的 `grok2api` 服务提供。
+- 接收注册成功后的账号记录
+- 做本地导入、查询和删除
+- 作为控制台的账号数据仓库
 
 ### 5. worker-runtime
 
@@ -70,7 +68,7 @@
 ## 设计原则
 
 - WARP 不和注册脚本写死耦合
-- sink 不直接侵入注册逻辑
+- 账号数据管理不直接侵入注册页面自动化逻辑
 - console 只做编排和观测，不直接篡改现有生产任务目录
 - 每个任务都复制到自己的运行目录里执行，避免互相污染
 
@@ -82,5 +80,5 @@
 2. `console` 创建任务并写入任务级 `config.json`
 3. `register-runner` 独立执行注册流程
 4. 成功后将 `sso` 追加写入本地文件
-5. 同时把 `sso` 推送到内置 `grok2api`
+5. 同时写入账号 JSONL，再由控制台导入到本地 SQLite
 6. `console` 持续从日志解析实时状态并展示
