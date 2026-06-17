@@ -1,0 +1,12 @@
+.git
+.github
+.env
+.venv
+**/.venv
+**/__pycache__
+**/*.pyc
+apps/console/runtime
+logs
+sso
+accounts
+runtime
