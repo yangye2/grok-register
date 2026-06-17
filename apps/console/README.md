@@ -29,6 +29,13 @@ cd /home/codex/grok-register
 ./deploy/start-console.sh
 ```
 
+Windows 本地启动：
+
+```bat
+cd /d E:\XXL\WorkSpace\AI\github\grok-register
+deploy\start-console.bat
+```
+
 默认环境变量：
 
 - `GROK_REGISTER_SOURCE_DIR=/home/codex/grok-register`
@@ -48,6 +55,8 @@ GROK_REGISTER_SOURCE_DIR=/home/codex/grok-register \
 GROK_REGISTER_PYTHON=/home/codex/grok-register/.venv/bin/python \
 python app.py
 ```
+
+如果你是 Windows，本地注册任务默认会使用仓库根目录下的 `.venv\Scripts\python.exe` 作为运行 Python。
 
 ## systemd 示例
 

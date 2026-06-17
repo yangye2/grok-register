@@ -73,9 +73,11 @@ def warn_runtime_compatibility():
 ensure_stable_python_runtime()
 warn_runtime_compatibility()
 
-# 无头服务器自动启用 Xvfb 虚拟显示器
+_headless_browser = os.environ.get("GROK_REGISTER_HEADLESS", "0").lower() in ("1", "true", "yes", "on")
+
+# 无头模式直接使用 Chrome/Chromium headless；非无头模式才自动启用 Xvfb 虚拟显示器。
 _virtual_display = None
-if not os.environ.get("DISPLAY") or os.environ.get("USE_XVFB") == "1":
+if not _headless_browser and (not os.environ.get("DISPLAY") or os.environ.get("USE_XVFB") == "1"):
     try:
         from pyvirtualdisplay import Display
         _virtual_display = Display(visible=0, size=(1920, 1080))
@@ -90,7 +92,7 @@ co.set_argument("--no-sandbox")
 co.set_argument("--disable-gpu")
 co.set_argument("--disable-dev-shm-usage")
 co.set_argument("--disable-software-rasterizer")
-if not os.environ.get("DISPLAY"):
+if _headless_browser or not os.environ.get("DISPLAY"):
     co.set_argument("--headless=new")
 
 # 从 config.json 读取代理配置给浏览器

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -32,9 +33,20 @@ TASKS_DIR = RUNTIME_DIR / "tasks"
 DB_PATH = RUNTIME_DIR / "console.db"
 TEMPLATES = Jinja2Templates(directory=str(APP_DIR / "templates"))
 
+
+def default_source_python(project_dir: Path) -> Path:
+    windows_path = project_dir / ".venv" / "Scripts" / "python.exe"
+    posix_path = project_dir / ".venv" / "bin" / "python"
+    if windows_path.exists():
+        return windows_path
+    if posix_path.exists():
+        return posix_path
+    return windows_path if os.name == "nt" else posix_path
+
+
 SOURCE_PROJECT = Path(os.getenv("GROK_REGISTER_SOURCE_DIR", str(REPO_ROOT))).resolve()
 SOURCE_VENV_PYTHON = Path(
-    os.getenv("GROK_REGISTER_PYTHON", str(SOURCE_PROJECT / ".venv" / "bin" / "python"))
+    os.getenv("GROK_REGISTER_PYTHON", str(default_source_python(SOURCE_PROJECT)))
 ).expanduser()
 MAX_CONCURRENT_TASKS = max(1, int(os.getenv("GROK_REGISTER_CONSOLE_MAX_CONCURRENT_TASKS", "1")))
 SUPERVISOR_INTERVAL = max(1.0, float(os.getenv("GROK_REGISTER_CONSOLE_POLL_INTERVAL", "2")))
@@ -145,6 +157,9 @@ def init_db() -> None:
                 imported_at TEXT NOT NULL,
                 UNIQUE(task_id, email, sso)
             );
+
+            CREATE INDEX IF NOT EXISTS idx_accounts_task_id ON accounts(task_id);
+            CREATE INDEX IF NOT EXISTS idx_accounts_created_at ON accounts(created_at DESC, id DESC);
             """
         )
 
@@ -510,6 +525,15 @@ def sync_all_account_records() -> None:
         sync_account_records_for_task(row)
 
 
+def sync_active_account_records() -> None:
+    rows = fetch_all(
+        "SELECT * FROM tasks WHERE status IN (?, ?, ?) ORDER BY id ASC",
+        (STATUS_QUEUED, STATUS_RUNNING, STATUS_STOPPING),
+    )
+    for row in rows:
+        sync_account_records_for_task(row)
+
+
 def account_count_for_task(task_id: int) -> int:
     row = fetch_one("SELECT COUNT(*) AS c FROM accounts WHERE task_id = ?", (task_id,))
     return int(row["c"]) if row else 0
@@ -554,6 +578,47 @@ def serialize_account(row: sqlite3.Row) -> dict[str, Any]:
         "created_at": row["created_at"],
         "imported_at": row["imported_at"],
     }
+
+
+def build_accounts_where_clause(task_id: int | None, search: str) -> tuple[str, list[Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if task_id is not None:
+        clauses.append("task_id = ?")
+        params.append(task_id)
+
+    keyword = search.strip()
+    if keyword:
+        like = f"%{keyword.lower()}%"
+        clauses.append(
+            "("
+            "LOWER(email) LIKE ? OR LOWER(sso) LIKE ? OR LOWER(task_name) LIKE ? OR LOWER(password) LIKE ?"
+            ")"
+        )
+        params.extend([like, like, like, like])
+
+    if not clauses:
+        return "", params
+    return " WHERE " + " AND ".join(clauses), params
+
+
+def build_tasks_where_clause(status: str) -> tuple[str, list[Any]]:
+    normalized = status.strip().lower()
+    if not normalized or normalized == "all":
+      return "", []
+    allowed = {
+        STATUS_QUEUED,
+        STATUS_RUNNING,
+        STATUS_STOPPING,
+        STATUS_COMPLETED,
+        STATUS_PARTIAL,
+        STATUS_FAILED,
+        STATUS_STOPPED,
+    }
+    if normalized not in allowed:
+        return "", []
+    return " WHERE status = ?", [normalized]
 
 
 def remove_account_from_source_file(row: sqlite3.Row) -> None:
@@ -733,8 +798,17 @@ class TaskSupervisor:
             "UPDATE tasks SET status = ?, last_error = ?, current_phase = ? WHERE id = ?",
             (STATUS_STOPPING, "Stopping task...", STATUS_STOPPING, task_id),
         )
+        self._terminate_process(managed.process)
+
+    def _terminate_process(self, process: subprocess.Popen[Any]) -> None:
+        if os.name == "nt":
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                return
+            return
         try:
-            os.killpg(managed.process.pid, signal.SIGTERM)
+            os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
 
@@ -923,13 +997,35 @@ def save_settings(payload: SystemSettings) -> dict[str, Any]:
 
 
 @app.get("/api/accounts")
-def list_accounts(task_id: int | None = Query(None, ge=1)) -> dict[str, Any]:
-    sync_all_account_records()
-    if task_id is None:
-        rows = fetch_all("SELECT * FROM accounts ORDER BY id DESC")
-    else:
-        rows = fetch_all("SELECT * FROM accounts WHERE task_id = ? ORDER BY id DESC", (task_id,))
-    return {"accounts": [serialize_account(row) for row in rows]}
+def list_accounts(
+    task_id: int | None = Query(None, ge=1),
+    search: str = Query(""),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+) -> dict[str, Any]:
+    sync_active_account_records()
+    where_clause, where_params = build_accounts_where_clause(task_id, search)
+    count_row = fetch_one(
+        f"SELECT COUNT(*) AS c FROM accounts{where_clause}",
+        tuple(where_params),
+    )
+    total = int(count_row["c"]) if count_row else 0
+    total_pages = max(1, math.ceil(total / page_size))
+    current_page = min(page, total_pages)
+    offset = (current_page - 1) * page_size
+    rows = fetch_all(
+        f"SELECT * FROM accounts{where_clause} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+        tuple(where_params + [page_size, offset]),
+    )
+    return {
+        "accounts": [serialize_account(row) for row in rows],
+        "pagination": {
+            "page": current_page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+        },
+    }
 
 
 @app.get("/api/accounts/{account_id}")
@@ -947,9 +1043,33 @@ def delete_account(account_id: int) -> dict[str, Any]:
 
 
 @app.get("/api/tasks")
-def list_tasks() -> dict[str, Any]:
-    rows = fetch_all("SELECT * FROM tasks ORDER BY id DESC")
-    return {"tasks": [serialize_task(row) for row in rows]}
+def list_tasks(
+    status: str = Query("all"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+) -> dict[str, Any]:
+    where_clause, where_params = build_tasks_where_clause(status)
+    count_row = fetch_one(
+        f"SELECT COUNT(*) AS c FROM tasks{where_clause}",
+        tuple(where_params),
+    )
+    total = int(count_row["c"]) if count_row else 0
+    total_pages = max(1, math.ceil(total / page_size))
+    current_page = min(page, total_pages)
+    offset = (current_page - 1) * page_size
+    rows = fetch_all(
+        f"SELECT * FROM tasks{where_clause} ORDER BY id DESC LIMIT ? OFFSET ?",
+        tuple(where_params + [page_size, offset]),
+    )
+    return {
+        "tasks": [serialize_task(row) for row in rows],
+        "pagination": {
+            "page": current_page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+        },
+    }
 
 
 @app.post("/api/tasks")
