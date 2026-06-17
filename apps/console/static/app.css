@@ -1,16 +1,31 @@
 :root {
-  --bg: #f5f1e8;
-  --panel: #fffaf1;
+  --bg: #f4f6f8;
+  --panel: #ffffff;
   --panel-strong: #fff;
-  --ink: #1f1a14;
-  --muted: #74685c;
-  --line: #d9cbb8;
-  --accent: #b4472b;
-  --accent-dark: #7f2f1b;
-  --success: #2f7d48;
-  --warn: #b07a16;
-  --danger: #a33422;
-  --shadow: 0 16px 40px rgba(58, 36, 15, 0.10);
+  --ink: #172033;
+  --muted: #667085;
+  --line: #d8dee8;
+  --accent: #2563eb;
+  --accent-dark: #1d4ed8;
+  --success: #167647;
+  --warn: #b54708;
+  --danger: #b42318;
+  --shadow: 0 10px 28px rgba(16, 24, 40, 0.08);
+}
+
+html[data-theme="dark"] {
+  --bg: #0f172a;
+  --panel: #111827;
+  --panel-strong: #0f172a;
+  --ink: #e5e7eb;
+  --muted: #9ca3af;
+  --line: #334155;
+  --accent: #3b82f6;
+  --accent-dark: #93c5fd;
+  --success: #4ade80;
+  --warn: #fbbf24;
+  --danger: #f87171;
+  --shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
 }
 
 * {
@@ -20,9 +35,7 @@
 body {
   margin: 0;
   font-family: "IBM Plex Sans", "PingFang SC", "Noto Sans SC", sans-serif;
-  background:
-    radial-gradient(circle at top right, rgba(180, 71, 43, 0.18), transparent 32%),
-    linear-gradient(180deg, #f7f3ea 0%, #efe6d7 100%);
+  background: var(--bg);
   color: var(--ink);
 }
 
@@ -33,10 +46,10 @@ body {
 }
 
 .topbar {
-  padding: 24px 28px;
-  background: linear-gradient(180deg, #201a16 0%, #2e241d 100%);
-  color: #f8efe0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 20px 28px;
+  background: #fff;
+  color: var(--ink);
+  border-bottom: 1px solid var(--line);
   display: flex;
   justify-content: space-between;
   gap: 20px;
@@ -60,7 +73,7 @@ body {
 
 .brand p,
 .meta-value {
-  color: rgba(248, 239, 224, 0.78);
+  color: var(--muted);
   line-height: 1.6;
 }
 
@@ -68,13 +81,67 @@ body {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.theme-toggle {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 132px;
+  height: 42px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #e9eef5;
+  color: var(--muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.theme-toggle:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.24);
+  outline-offset: 2px;
+}
+
+.theme-option {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  transition: color 160ms ease;
+}
+
+.theme-thumb {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: calc(50% - 4px);
+  height: calc(100% - 8px);
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.18);
+  transition: transform 160ms ease, background 160ms ease;
+}
+
+.theme-toggle[data-theme="dark"] .theme-thumb {
+  transform: translateX(100%);
+}
+
+.theme-toggle[data-theme="light"] .theme-light,
+.theme-toggle[data-theme="dark"] .theme-dark {
+  color: var(--accent-dark);
 }
 
 .meta-card {
-  padding: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.04);
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fafc;
   min-width: 220px;
 }
 
@@ -88,9 +155,38 @@ body {
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 24px;
+  border-radius: 12px;
   box-shadow: var(--shadow);
-  padding: 22px;
+  padding: 18px;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px;
+  width: fit-content;
+  max-width: 100%;
+  background: #e9eef5;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.tab-button {
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 18px;
+  min-width: 110px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tab-button.active {
+  background: #fff;
+  color: var(--accent-dark);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.10);
 }
 
 .health-meta {
@@ -105,97 +201,75 @@ body {
   gap: 14px;
 }
 
-.accounts-layout {
-  display: grid;
-  grid-template-columns: 360px minmax(0, 1fr);
-  gap: 16px;
+.panel-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
-.accounts-list {
-  display: grid;
-  gap: 10px;
-  max-height: 580px;
+.accounts-table-wrap {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
   overflow: auto;
 }
 
-.account-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) auto;
-  gap: 12px;
+.accounts-table {
   width: 100%;
-  text-align: left;
+  min-width: 1040px;
+  border-collapse: collapse;
+}
+
+.accounts-table th,
+.accounts-table td {
   padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: #fff;
-  color: var(--ink);
-  cursor: pointer;
-}
-
-.account-row.selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(180, 71, 43, 0.12);
-}
-
-.account-row span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: middle;
   font-size: 13px;
 }
 
-.account-detail {
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  background: #fff;
-  padding: 16px;
-}
-
-.account-detail.empty {
-  min-height: 220px;
-  display: flex;
-  align-items: center;
+.accounts-table th {
   color: var(--muted);
+  background: #f8fafc;
+  font-weight: 700;
 }
 
-.account-detail h3 {
-  margin: 6px 0 0;
-  font-size: 20px;
+.accounts-table tbody tr:last-child td {
+  border-bottom: 0;
 }
 
-.account-detail-head {
+.accounts-table .select-col {
+  width: 44px;
+  text-align: center;
+}
+
+.account-email,
+.account-password,
+.account-sso,
+.accounts-table td:nth-child(5) {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-sso {
+  max-width: 340px;
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+}
+
+.account-actions {
   display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-  margin-bottom: 14px;
-}
-
-.account-fields {
-  margin-bottom: 14px;
-}
-
-.account-token-block {
-  border-top: 1px solid var(--line);
-  padding-top: 14px;
-}
-
-.account-token-block pre {
-  margin: 10px 0 0;
-  padding: 12px;
-  border-radius: 12px;
-  background: #f8f4ec;
-  border: 1px solid var(--line);
-  color: var(--ink);
-  white-space: pre-wrap;
-  word-break: break-all;
+  gap: 8px;
+  white-space: nowrap;
 }
 
 .health-card {
   background: #fff;
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 10px;
   padding: 16px;
 }
 
@@ -248,7 +322,7 @@ body {
 
 .panel-head h2 {
   margin: 6px 0 0;
-  font-size: 28px;
+  font-size: 22px;
 }
 
 .panel-desc {
@@ -303,7 +377,7 @@ body {
 .task-form textarea {
   width: 100%;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 8px;
   padding: 12px 14px;
   background: var(--panel-strong);
   color: var(--ink);
@@ -320,7 +394,7 @@ body {
 
 .button {
   border: 0;
-  border-radius: 999px;
+  border-radius: 8px;
   padding: 12px 16px;
   background: var(--accent);
   color: #fff7f4;
@@ -328,8 +402,13 @@ body {
   cursor: pointer;
 }
 
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .button-secondary {
-  background: #e4d2bd;
+  background: #e9eef5;
   color: var(--ink);
 }
 
@@ -366,7 +445,7 @@ body {
 .task-card {
   border: 1px solid var(--line);
   background: #fff;
-  border-radius: 18px;
+  border-radius: 10px;
   padding: 14px;
   text-align: left;
   cursor: pointer;
@@ -440,7 +519,7 @@ body {
 .meta-item {
   background: #fff;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 10px;
   padding: 14px;
 }
 
@@ -451,17 +530,17 @@ body {
 }
 
 .console-wrap {
-  border: 1px solid #30251f;
-  border-radius: 20px;
+  border: 1px solid #1f2937;
+  border-radius: 10px;
   overflow: hidden;
-  background: #171311;
+  background: #111827;
 }
 
 .console-head {
   padding: 12px 14px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  color: #d8c8b2;
-  background: #211a16;
+  color: #d1d5db;
+  background: #1f2937;
 }
 
 .console-output {
@@ -469,7 +548,7 @@ body {
   height: 720px;
   overflow: auto;
   padding: 16px;
-  color: #f1e5d3;
+  color: #e5e7eb;
   font: 12px/1.5 "IBM Plex Mono", "SFMono-Regular", monospace;
 }
 
@@ -478,11 +557,75 @@ body {
   padding: 16px 4px;
 }
 
+html[data-theme="dark"] .topbar,
+html[data-theme="dark"] .panel,
+html[data-theme="dark"] .health-card,
+html[data-theme="dark"] .summary-item,
+html[data-theme="dark"] .meta-item,
+html[data-theme="dark"] .accounts-table-wrap,
+html[data-theme="dark"] .task-card {
+  background: var(--panel);
+}
+
+html[data-theme="dark"] .meta-card,
+html[data-theme="dark"] .tabs,
+html[data-theme="dark"] .accounts-table th,
+html[data-theme="dark"] .button-secondary,
+html[data-theme="dark"] .theme-toggle {
+  background: #1f2937;
+}
+
+html[data-theme="dark"] .tab-button.active {
+  background: #0f172a;
+  color: var(--accent-dark);
+}
+
+html[data-theme="dark"] .theme-thumb {
+  background: #0f172a;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+html[data-theme="dark"] .task-form input,
+html[data-theme="dark"] .task-form textarea {
+  background: #0f172a;
+  color: var(--ink);
+}
+
+html[data-theme="dark"] .task-card.selected {
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+}
+
+html[data-theme="dark"] .health-ok,
+html[data-theme="dark"] .status-completed {
+  background: rgba(74, 222, 128, 0.14);
+}
+
+html[data-theme="dark"] .health-bad,
+html[data-theme="dark"] .status-failed,
+html[data-theme="dark"] .status-stopped {
+  background: rgba(248, 113, 113, 0.14);
+}
+
+html[data-theme="dark"] .status-queued,
+html[data-theme="dark"] .status-stopping,
+html[data-theme="dark"] .status-partial {
+  background: rgba(251, 191, 36, 0.14);
+}
+
+html[data-theme="dark"] .status-running {
+  background: rgba(59, 130, 246, 0.16);
+  color: #93c5fd;
+}
+
 @media (max-width: 1120px) {
   .topbar,
   .workspace {
     grid-template-columns: 1fr;
     flex-direction: column;
+  }
+
+  .accounts-table {
+    min-width: 920px;
   }
 }
 
@@ -497,5 +640,9 @@ body {
 
   .panel-head {
     flex-direction: column;
+  }
+
+  .panel-actions {
+    width: 100%;
   }
 }

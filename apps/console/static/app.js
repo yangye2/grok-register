@@ -3,7 +3,7 @@
     tasks: [],
     selectedTaskId: null,
     accounts: [],
-    selectedAccountId: null,
+    selectedAccountIds: new Set(),
   };
 
   const taskListEl = document.getElementById("taskList");
@@ -18,16 +18,20 @@
   const stopBtnEl = document.getElementById("stopBtn");
   const refreshBtnEl = document.getElementById("refreshBtn");
   const healthRefreshBtnEl = document.getElementById("healthRefreshBtn");
-  const toggleSettingsBtnEl = document.getElementById("toggleSettingsBtn");
   const toggleAdvancedBtnEl = document.getElementById("toggleAdvancedBtn");
   const toggleMailBtnEl = document.getElementById("toggleMailBtn");
+  const themeToggleEl = document.getElementById("themeToggle");
   const advancedFieldsEl = document.getElementById("advancedFields");
+  const tabButtons = Array.from(document.querySelectorAll("[data-tab-target]"));
+  const tabPanels = Array.from(document.querySelectorAll("[data-tab-panel]"));
   const healthGridEl = document.getElementById("healthGrid");
   const healthMetaEl = document.getElementById("healthMeta");
   const accountsRefreshBtnEl = document.getElementById("accountsRefreshBtn");
+  const accountsDownloadBtnEl = document.getElementById("accountsDownloadBtn");
   const accountsMetaEl = document.getElementById("accountsMeta");
-  const accountsListEl = document.getElementById("accountsList");
-  const accountDetailEl = document.getElementById("accountDetail");
+  const accountsSelectAllEl = document.getElementById("accountsSelectAll");
+  const accountsTableBodyEl = document.getElementById("accountsTableBody");
+  const accountsEmptyEl = document.getElementById("accountsEmpty");
 
   function escapeHtml(value) {
     return String(value || "")
@@ -54,6 +58,41 @@
 
   function healthClass(ok) {
     return ok ? "health-pill health-ok" : "health-pill health-bad";
+  }
+
+  function applyTheme(theme) {
+    const normalized = theme === "dark" ? "dark" : "light";
+    document.documentElement.dataset.theme = normalized;
+    themeToggleEl.setAttribute("aria-pressed", normalized === "dark" ? "true" : "false");
+    themeToggleEl.dataset.theme = normalized;
+    localStorage.setItem("grok-register-theme", normalized);
+  }
+
+  function initTheme() {
+    const saved = localStorage.getItem("grok-register-theme");
+    if (saved) {
+      applyTheme(saved);
+      return;
+    }
+    const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    applyTheme(prefersDark ? "dark" : "light");
+  }
+
+  function activateTab(tabName) {
+    tabButtons.forEach((button) => {
+      const active = button.dataset.tabTarget === tabName;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    tabPanels.forEach((panel) => {
+      panel.classList.toggle("hidden", panel.dataset.tabPanel !== tabName);
+    });
+    if (tabName === "accounts") {
+      refreshAccounts();
+    }
+    if (tabName === "config") {
+      refreshHealth();
+    }
   }
 
   function renderHealth(data) {
@@ -170,80 +209,93 @@
     `).join("");
   }
 
-  function renderAccountDetail(account) {
-    if (!account) {
-      accountDetailEl.className = "account-detail empty";
-      accountDetailEl.textContent = "选择账号后显示详情";
-      return;
-    }
-
-    accountDetailEl.className = "account-detail";
-    accountDetailEl.innerHTML = `
-      <div class="account-detail-head">
-        <div>
-          <div class="meta-item-label">当前账号</div>
-          <h3>${escapeHtml(account.email)}</h3>
-        </div>
-        <button class="button button-danger button-small" type="button" data-delete-account-id="${account.id}">删除账号</button>
-      </div>
-      <div class="detail-grid account-fields">
-        ${[
-          ["任务", `#${account.task_id} ${account.task_name || ""}`],
-          ["姓名", `${account.given_name || "-"} ${account.family_name || ""}`.trim() || "-"],
-          ["密码", account.password || "-"],
-          ["创建时间", account.created_at || "-"],
-          ["导入时间", account.imported_at || "-"],
-          ["来源文件", account.source_file || "-"],
-        ].map(([label, value]) => `
-          <div class="meta-item">
-            <div class="meta-item-label">${escapeHtml(label)}</div>
-            <div class="meta-item-value">${escapeHtml(value)}</div>
-          </div>
-        `).join("")}
-      </div>
-      <div class="account-token-block">
-        <div class="meta-item-label">SSO</div>
-        <pre>${escapeHtml(account.sso || "-")}</pre>
-      </div>
-    `;
-
-    accountDetailEl.querySelector("[data-delete-account-id]").addEventListener("click", async () => {
-      const confirmed = window.confirm(`确认删除账号 ${account.email} 吗？`);
-      if (!confirmed) return;
-      await fetchJson(`/api/accounts/${account.id}`, { method: "DELETE" });
-      state.selectedAccountId = null;
-      await refreshAccounts();
-    });
-  }
-
   function renderAccounts() {
-    accountsMetaEl.textContent = `本地账号 ${state.accounts.length} 个`;
+    const validIds = new Set(state.accounts.map((account) => account.id));
+    state.selectedAccountIds = new Set(
+      Array.from(state.selectedAccountIds).filter((id) => validIds.has(id))
+    );
+
+    accountsMetaEl.textContent = `本地账号 ${state.accounts.length} 个，已选择 ${state.selectedAccountIds.size} 个`;
+    accountsDownloadBtnEl.disabled = state.selectedAccountIds.size === 0;
+    accountsSelectAllEl.checked = state.accounts.length > 0 && state.selectedAccountIds.size === state.accounts.length;
+    accountsSelectAllEl.indeterminate = state.selectedAccountIds.size > 0 && state.selectedAccountIds.size < state.accounts.length;
+
     if (!state.accounts.length) {
-      accountsListEl.innerHTML = '<div class="empty">暂无账号</div>';
-      renderAccountDetail(null);
+      accountsTableBodyEl.innerHTML = "";
+      accountsEmptyEl.textContent = "暂无账号";
+      accountsEmptyEl.classList.remove("hidden");
       return;
     }
+    accountsEmptyEl.classList.add("hidden");
 
-    if (!state.selectedAccountId || !state.accounts.some((item) => item.id === state.selectedAccountId)) {
-      state.selectedAccountId = state.accounts[0].id;
-    }
-
-    accountsListEl.innerHTML = state.accounts.map((account) => `
-      <button class="account-row ${account.id === state.selectedAccountId ? "selected" : ""}" type="button" data-account-id="${account.id}">
-        <span>${escapeHtml(account.email)}</span>
-        <span>#${account.task_id} ${escapeHtml(account.task_name || "")}</span>
-        <span>${escapeHtml(account.created_at || "-")}</span>
-      </button>
+    accountsTableBodyEl.innerHTML = state.accounts.map((account) => `
+      <tr>
+        <td class="select-col">
+          <input type="checkbox" data-account-select="${account.id}" ${state.selectedAccountIds.has(account.id) ? "checked" : ""} aria-label="选择 ${escapeHtml(account.email)}">
+        </td>
+        <td class="account-email" title="${escapeHtml(account.email)}">${escapeHtml(account.email)}</td>
+        <td class="account-password" title="${escapeHtml(account.password || "")}">${escapeHtml(account.password || "-")}</td>
+        <td class="account-sso" title="${escapeHtml(account.sso || "")}">${escapeHtml(account.sso || "-")}</td>
+        <td title="#${account.task_id} ${escapeHtml(account.task_name || "")}">#${account.task_id} ${escapeHtml(account.task_name || "")}</td>
+        <td>${escapeHtml(account.created_at || "-")}</td>
+        <td class="account-actions">
+          <button class="button button-small" type="button" data-download-account-id="${account.id}">下载</button>
+          <button class="button button-danger button-small" type="button" data-delete-account-id="${account.id}">删除</button>
+        </td>
+      </tr>
     `).join("");
 
-    accountsListEl.querySelectorAll("[data-account-id]").forEach((button) => {
-      button.addEventListener("click", () => {
-        state.selectedAccountId = Number(button.dataset.accountId);
+    accountsTableBodyEl.querySelectorAll("[data-account-select]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const accountId = Number(input.dataset.accountSelect);
+        if (input.checked) {
+          state.selectedAccountIds.add(accountId);
+        } else {
+          state.selectedAccountIds.delete(accountId);
+        }
         renderAccounts();
       });
     });
 
-    renderAccountDetail(state.accounts.find((item) => item.id === state.selectedAccountId));
+    accountsTableBodyEl.querySelectorAll("[data-download-account-id]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const account = state.accounts.find((item) => item.id === Number(button.dataset.downloadAccountId));
+        if (account) {
+          downloadSsoFile([account], `sso_${account.email || account.id}.txt`);
+        }
+      });
+    });
+
+    accountsTableBodyEl.querySelectorAll("[data-delete-account-id]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const account = state.accounts.find((item) => item.id === Number(button.dataset.deleteAccountId));
+        if (!account) return;
+        const confirmed = window.confirm(`确认删除账号 ${account.email} 吗？`);
+        if (!confirmed) return;
+        await fetchJson(`/api/accounts/${account.id}`, { method: "DELETE" });
+        state.selectedAccountIds.delete(account.id);
+        await refreshAccounts();
+      });
+    });
+  }
+
+  function downloadSsoFile(accounts, filename) {
+    const lines = accounts
+      .map((account) => String(account.sso || "").trim())
+      .filter(Boolean);
+    if (!lines.length) {
+      accountsMetaEl.textContent = "没有可下载的 SSO";
+      return;
+    }
+    const blob = new Blob([`${lines.join("\n")}\n`], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   }
 
   async function fetchJson(url, options) {
@@ -303,7 +355,9 @@
       renderAccounts();
     } catch (error) {
       accountsMetaEl.textContent = `账号加载失败: ${error.message}`;
-      accountsListEl.innerHTML = '<div class="empty">账号加载失败</div>';
+      accountsTableBodyEl.innerHTML = "";
+      accountsEmptyEl.textContent = "账号加载失败";
+      accountsEmptyEl.classList.remove("hidden");
     }
   }
 
@@ -351,6 +405,22 @@
   refreshBtnEl.addEventListener("click", refreshAll);
   healthRefreshBtnEl.addEventListener("click", refreshHealth);
   accountsRefreshBtnEl.addEventListener("click", refreshAccounts);
+  accountsDownloadBtnEl.addEventListener("click", () => {
+    const selected = state.accounts.filter((account) => state.selectedAccountIds.has(account.id));
+    downloadSsoFile(selected, `sso_selected_${Date.now()}.txt`);
+  });
+  accountsSelectAllEl.addEventListener("change", () => {
+    if (accountsSelectAllEl.checked) {
+      state.selectedAccountIds = new Set(state.accounts.map((account) => account.id));
+    } else {
+      state.selectedAccountIds.clear();
+    }
+    renderAccounts();
+  });
+  themeToggleEl.addEventListener("click", () => {
+    const current = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+    applyTheme(current === "dark" ? "light" : "dark");
+  });
 
   settingsFormEl.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -384,9 +454,10 @@
     toggleAdvancedBtnEl.textContent = advancedFieldsEl.classList.contains("hidden") ? "高级设置" : "收起高级设置";
   });
 
-  toggleSettingsBtnEl.addEventListener("click", () => {
-    settingsFormEl.classList.toggle("hidden");
-    toggleSettingsBtnEl.textContent = settingsFormEl.classList.contains("hidden") ? "展开系统默认配置" : "收起系统默认配置";
+  tabButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      activateTab(button.dataset.tabTarget);
+    });
   });
 
   toggleMailBtnEl.addEventListener("click", () => {
@@ -394,7 +465,9 @@
     toggleMailBtnEl.textContent = detailMetaEl.classList.contains("hidden") ? "展开临时邮箱参数" : "收起临时邮箱参数";
   });
 
+  initTheme();
   setDefaults();
+  activateTab("register");
   refreshHealth();
   refreshAccounts();
   refreshAll();
