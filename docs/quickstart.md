@@ -53,7 +53,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y xvfb chromium-browser
 git clone https://github.com/509992828/grok-register.git
 cd grok-register
 cp .env.example .env
-docker compose up -d --build
+docker compose up -d
 ```
 
 默认端口：

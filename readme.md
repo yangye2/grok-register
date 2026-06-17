@@ -134,14 +134,14 @@ If you prefer a container setup, you can run the project with Docker too.
 git clone https://github.com/509992828/grok-register.git
 cd grok-register
 cp .env.example .env
-docker compose up -d --build
+docker compose up -d
 ```
 
 GitHub Actions will build and publish the Docker image to GitHub Container Registry when code is pushed to `main` / `master`, when a `v*` tag is pushed, or when the workflow is run manually.
 
 Published image:
 
-- `ghcr.io/509992828/grok-register:latest`
+- `ghcr.io/yangye2/grok-register:latest`
 
 If you need to change the console port or default proxy, edit `.env` first.
 

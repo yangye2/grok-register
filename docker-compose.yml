@@ -17,9 +17,7 @@ services:
       - warp
 
   console:
-    build:
-      context: .
-      dockerfile: apps/worker-runtime/Dockerfile
+    image: ghcr.io/yangye2/grok-register:latest
     working_dir: /workspace
     command: python /workspace/apps/console/app.py
     environment:
@@ -34,7 +32,7 @@ services:
     ports:
       - "${GROK_STACK_CONSOLE_PORT:-18600}:18600"
     volumes:
-      - .:/workspace
+      - ./runtime/console:/workspace/apps/console/runtime
     restart: unless-stopped
     depends_on:
       - warp
