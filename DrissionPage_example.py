@@ -3,6 +3,7 @@ from DrissionPage.errors import PageDisconnectedError
 import argparse
 import json
 import shutil
+import sqlite3
 import tempfile
 import datetime
 import logging
@@ -141,11 +142,7 @@ page = None
 
 SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 
-_sso_dir = os.path.join(os.path.dirname(__file__), "sso")
-_sso_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-DEFAULT_SSO_FILE = os.path.join(_sso_dir, f"sso_{_sso_ts}.txt")
-_account_dir = os.path.join(os.path.dirname(__file__), "accounts")
-DEFAULT_ACCOUNT_FILE = os.path.join(_account_dir, f"accounts_{_sso_ts}.jsonl")
+DEFAULT_ACCOUNT_DB = os.path.join(os.path.dirname(__file__), "accounts.db")
 
 
 def start_browser():
@@ -1064,28 +1061,63 @@ def wait_for_sso_cookie(timeout=30):
     raise Exception(f"注册完成后未获取到 sso cookie，当前已见 cookie: {sorted(last_seen_names)}")
 
 
-def append_sso_to_txt(sso_value, output_path=DEFAULT_SSO_FILE):
-    # 按用户要求，一行写一个 sso 值，持续追加。
-    normalized = str(sso_value or "").strip()
-    if not normalized:
-        raise Exception("待写入的 sso 为空")
+def save_account_to_sqlite(account_record: dict, db_path: str, task_id: int = 0, task_name: str = "manual"):
+    if not db_path:
+        raise Exception("SQLite 数据库路径为空")
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "a", encoding="utf-8") as file:
-        file.write(normalized + "\n")
+    normalized_path = os.path.abspath(db_path)
+    db_dir = os.path.dirname(normalized_path)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
 
-    print(f"[*] 已追加写入 sso 到文件: {output_path}")
+    email = str(account_record.get("email") or "").strip()
+    sso = str(account_record.get("sso") or "").strip()
+    if not email or not sso:
+        raise Exception("待写入的账号记录缺少 email 或 sso")
 
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    with sqlite3.connect(normalized_path, timeout=30) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                task_name TEXT NOT NULL,
+                email TEXT NOT NULL,
+                sso TEXT NOT NULL,
+                given_name TEXT,
+                family_name TEXT,
+                password TEXT,
+                source_file TEXT,
+                created_at TEXT NOT NULL,
+                imported_at TEXT NOT NULL,
+                UNIQUE(task_id, email, sso)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO accounts (
+                task_id, task_name, email, sso, given_name, family_name, password,
+                source_file, created_at, imported_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(task_id or 0),
+                str(task_name or "manual"),
+                email,
+                sso,
+                str(account_record.get("given_name") or ""),
+                str(account_record.get("family_name") or ""),
+                str(account_record.get("password") or ""),
+                "",
+                str(account_record.get("created_at") or now),
+                now,
+            ),
+        )
+        conn.commit()
 
-def append_account_to_jsonl(account_record: dict, output_path=DEFAULT_ACCOUNT_FILE):
-    if not output_path:
-        return
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "a", encoding="utf-8") as file:
-        file.write(json.dumps(account_record, ensure_ascii=False, separators=(",", ":")) + "\n")
-
-    print(f"[*] 已写入账号记录到文件: {output_path}")
+    print(f"[*] 已写入账号记录到 SQLite: {normalized_path}")
 
 
 def build_account_record(email: str, sso_value: str, profile: dict) -> dict:
@@ -1099,16 +1131,15 @@ def build_account_record(email: str, sso_value: str, profile: dict) -> dict:
     }
 
 
-def run_single_registration(output_path=DEFAULT_SSO_FILE, account_output_path=DEFAULT_ACCOUNT_FILE, extract_numbers=False):
-    # 单轮流程：打开注册页 -> 完成注册 -> 获取 sso -> 写本地结果。
+def run_single_registration(account_db_path=DEFAULT_ACCOUNT_DB, task_id=0, task_name="manual", extract_numbers=False):
+    # 单轮流程：打开注册页 -> 完成注册 -> 获取 sso -> 写入 SQLite。
     open_signup_page()
     email, dev_token = fill_email_and_submit()
     fill_code_and_submit(email, dev_token)
     profile = fill_profile_and_submit()
     sso_value = wait_for_sso_cookie()
-    append_sso_to_txt(sso_value, output_path)
     account_record = build_account_record(email, sso_value, profile)
-    append_account_to_jsonl(account_record, account_output_path)
+    save_account_to_sqlite(account_record, account_db_path, task_id=task_id, task_name=task_name)
 
     if extract_numbers:
         extract_visible_numbers()
@@ -1157,8 +1188,11 @@ def main():
 
     parser = argparse.ArgumentParser(description="xAI 自动注册并采集本地账号数据")
     parser.add_argument("--count", type=int, default=config_count, help=f"执行轮数，0 表示无限循环（默认读取 config.json run.count，当前 {config_count}）")
-    parser.add_argument("--output", default=DEFAULT_SSO_FILE, help="sso 输出 txt 路径")
-    parser.add_argument("--account-output", default=DEFAULT_ACCOUNT_FILE, help="账号数据 JSONL 输出路径")
+    parser.add_argument("--output", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--account-output", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--account-db", default=DEFAULT_ACCOUNT_DB, help="账号数据 SQLite 数据库路径")
+    parser.add_argument("--task-id", type=int, default=0, help="控制台任务 ID，手工运行时可保持默认 0")
+    parser.add_argument("--task-name", default="manual", help="控制台任务名称，手工运行时可保持默认 manual")
     parser.add_argument("--extract-numbers", action="store_true", help="注册完成后额外提取页面数字文本")
     args = parser.parse_args()
 
@@ -1174,7 +1208,12 @@ def main():
             round_succeeded = False
 
             try:
-                run_single_registration(args.output, account_output_path=args.account_output, extract_numbers=args.extract_numbers)
+                run_single_registration(
+                    account_db_path=args.account_db,
+                    task_id=args.task_id,
+                    task_name=args.task_name,
+                    extract_numbers=args.extract_numbers,
+                )
                 round_succeeded = True
             except KeyboardInterrupt:
                 print("\n[Info] 收到中断信号，停止后续轮次。")
