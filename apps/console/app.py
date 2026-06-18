@@ -472,68 +472,6 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
     }
 
 
-def account_output_path(row: sqlite3.Row) -> Path:
-    return Path(row["task_dir"]) / "accounts" / f"task_{int(row['id'])}.jsonl"
-
-
-def sync_account_records_for_task(row: sqlite3.Row) -> None:
-    path = account_output_path(row)
-    if not path.exists():
-        return
-
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(record, dict):
-            continue
-
-        email = str(record.get("email") or "").strip()
-        sso = str(record.get("sso") or "").strip()
-        if not email or not sso:
-            continue
-
-        execute_no_return(
-            """
-            INSERT OR IGNORE INTO accounts (
-                task_id, task_name, email, sso, given_name, family_name, password,
-                source_file, created_at, imported_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                int(row["id"]),
-                str(row["name"]),
-                email,
-                sso,
-                str(record.get("given_name") or ""),
-                str(record.get("family_name") or ""),
-                str(record.get("password") or ""),
-                str(path),
-                str(record.get("created_at") or row["created_at"] or now_iso()),
-                now_iso(),
-            ),
-        )
-
-
-def sync_all_account_records() -> None:
-    rows = fetch_all("SELECT * FROM tasks ORDER BY id ASC")
-    for row in rows:
-        sync_account_records_for_task(row)
-
-
-def sync_active_account_records() -> None:
-    rows = fetch_all(
-        "SELECT * FROM tasks WHERE status IN (?, ?, ?) ORDER BY id ASC",
-        (STATUS_QUEUED, STATUS_RUNNING, STATUS_STOPPING),
-    )
-    for row in rows:
-        sync_account_records_for_task(row)
-
-
 def account_count_for_task(task_id: int) -> int:
     row = fetch_one("SELECT COUNT(*) AS c FROM accounts WHERE task_id = ?", (task_id,))
     return int(row["c"]) if row else 0
@@ -574,7 +512,6 @@ def serialize_account(row: sqlite3.Row) -> dict[str, Any]:
         "given_name": row["given_name"] or "",
         "family_name": row["family_name"] or "",
         "password": row["password"] or "",
-        "source_file": row["source_file"] or "",
         "created_at": row["created_at"],
         "imported_at": row["imported_at"],
     }
@@ -619,42 +556,6 @@ def build_tasks_where_clause(status: str) -> tuple[str, list[Any]]:
     if normalized not in allowed:
         return "", []
     return " WHERE status = ?", [normalized]
-
-
-def remove_account_from_source_file(row: sqlite3.Row) -> None:
-    source_file = str(row["source_file"] or "").strip()
-    if not source_file:
-        return
-
-    path = Path(source_file)
-    if not path.exists() or not path.is_file():
-        return
-
-    email = str(row["email"] or "").strip()
-    sso = str(row["sso"] or "").strip()
-    kept: list[str] = []
-    changed = False
-
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            record = json.loads(stripped)
-        except json.JSONDecodeError:
-            kept.append(line)
-            continue
-        if (
-            isinstance(record, dict)
-            and str(record.get("email") or "").strip() == email
-            and str(record.get("sso") or "").strip() == sso
-        ):
-            changed = True
-            continue
-        kept.append(line)
-
-    if changed:
-        path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
 
 
 def read_log_lines(path: Path, limit: int = 200) -> list[str]:
@@ -759,8 +660,6 @@ def copy_source_to_task_dir(task_dir: Path, task_config: dict[str, Any]) -> None
             shutil.rmtree(dst)
         shutil.copytree(src, dst)
     (task_dir / "logs").mkdir(exist_ok=True)
-    (task_dir / "sso").mkdir(exist_ok=True)
-    (task_dir / "accounts").mkdir(exist_ok=True)
     (task_dir / "config.json").write_text(
         json.dumps(task_config, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -842,17 +741,14 @@ class TaskSupervisor:
         task_config = json.loads(row["config_json"])
         copy_source_to_task_dir(task_dir, task_config)
 
-        output_path = task_dir / "sso" / f"task_{task_id}.txt"
-        account_output_path = task_dir / "accounts" / f"task_{task_id}.jsonl"
         command = [
             str(SOURCE_VENV_PYTHON),
             str(task_dir / "DrissionPage_example.py"),
             "--count",
             str(int(row["target_count"])),
-            "--output",
-            str(output_path),
-            "--account-output",
-            str(account_output_path),
+            f"--account-db={DB_PATH}",
+            f"--task-id={task_id}",
+            f"--task-name={row['name']}",
         ]
         log_handle = console_path.open("a", encoding="utf-8")
         process = subprocess.Popen(
@@ -879,7 +775,6 @@ class TaskSupervisor:
             row = task_row(task_id)
             console_path = Path(row["console_path"])
             parsed = parse_console_state(console_path)
-            sync_account_records_for_task(row)
             execute_no_return(
                 """
                 UPDATE tasks
@@ -943,7 +838,6 @@ supervisor = TaskSupervisor()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    sync_all_account_records()
     supervisor.start()
     try:
         yield
@@ -1003,7 +897,6 @@ def list_accounts(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
 ) -> dict[str, Any]:
-    sync_active_account_records()
     where_clause, where_params = build_accounts_where_clause(task_id, search)
     count_row = fetch_one(
         f"SELECT COUNT(*) AS c FROM accounts{where_clause}",
@@ -1030,14 +923,12 @@ def list_accounts(
 
 @app.get("/api/accounts/{account_id}")
 def get_account(account_id: int) -> dict[str, Any]:
-    sync_all_account_records()
     return {"account": serialize_account(account_row(account_id))}
 
 
 @app.delete("/api/accounts/{account_id}")
 def delete_account(account_id: int) -> dict[str, Any]:
-    row = account_row(account_id)
-    remove_account_from_source_file(row)
+    account_row(account_id)
     execute_no_return("DELETE FROM accounts WHERE id = ?", (account_id,))
     return {"ok": True}
 
