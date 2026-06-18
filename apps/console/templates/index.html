@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Grok Register Console</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <div class="brand-mark">GR</div>
+        <div>
+          <div class="brand-kicker">Console</div>
+          <h1>Grok Register</h1>
+          <p>注册、账号、参数统一管理</p>
+        </div>
+      </div>
+
+      <button id="themeToggle" class="theme-toggle" type="button" aria-label="切换主题" aria-pressed="false">
+        <span class="theme-option theme-light">浅色</span>
+        <span class="theme-option theme-dark">深色</span>
+        <span class="theme-thumb"></span>
+      </button>
+
+      <nav class="nav" aria-label="主导航">
+        <button class="nav-item active" type="button" data-tab-target="register">账号注册</button>
+        <button class="nav-item" type="button" data-tab-target="accounts">账号管理</button>
+        <button class="nav-item" type="button" data-tab-target="config">参数配置</button>
+      </nav>
+    </aside>
+
+    <main class="content">
+      <section class="metric-grid" data-tab-panel="register">
+        <article class="metric-card">
+          <span class="meta-label">任务总数</span>
+          <strong id="metricTaskTotal">0</strong>
+          <small>当前控制台任务记录</small>
+        </article>
+        <article class="metric-card">
+          <span class="meta-label">运行中</span>
+          <strong id="metricTaskRunning">0</strong>
+          <small>queued / running / stopping</small>
+        </article>
+        <article class="metric-card">
+          <span class="meta-label">本地账号</span>
+          <strong id="metricAccountTotal">0</strong>
+          <small>已同步到本地账号库</small>
+        </article>
+        <article class="metric-card">
+          <span class="meta-label">已选择账号</span>
+          <strong id="metricAccountSelected">0</strong>
+          <small>可批量下载或删除</small>
+        </article>
+      </section>
+
+      <section class="grid-stack">
+        <section class="panel" data-tab-panel="register">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">Create Task</div>
+              <h3>新建任务</h3>
+            </div>
+            <button id="toggleAdvancedBtn" class="button button-secondary" type="button">高级设置</button>
+          </div>
+
+          <form id="taskForm" class="task-form">
+            <label>
+              <span>任务名称</span>
+              <input name="name" required placeholder="例如 hk-warp-batch-01">
+            </label>
+            <label>
+              <span>执行次数</span>
+              <input name="count" type="number" min="1" max="5000" required>
+            </label>
+            <div id="advancedFields" class="advanced-fields full hidden">
+              <label>
+                <span>浏览器代理覆盖</span>
+                <input name="browser_proxy" placeholder="留空则用系统默认">
+              </label>
+              <label>
+                <span>请求代理覆盖</span>
+                <input name="proxy" placeholder="留空则用系统默认">
+              </label>
+              <label>
+                <span>邮箱 API Base 覆盖</span>
+                <input name="temp_mail_api_base" placeholder="留空则用系统默认">
+              </label>
+              <label>
+                <span>邮箱域名覆盖</span>
+                <input name="temp_mail_domain" placeholder="留空则用系统默认">
+              </label>
+              <label>
+                <span>邮箱管理口令 / DuckMail API Key</span>
+                <input name="temp_mail_admin_password" placeholder="留空则用系统默认">
+              </label>
+              <label>
+                <span>站点密码覆盖</span>
+                <input name="temp_mail_site_password" placeholder="留空则用系统默认">
+              </label>
+            </div>
+            <div class="form-actions full">
+              <button class="button" type="submit">创建任务</button>
+              <div id="formMessage" class="form-message"></div>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel panel-accounts" data-tab-panel="accounts">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">Account Store</div>
+              <h3>账号管理</h3>
+            </div>
+            <div class="panel-actions">
+              <button id="accountsRefreshBtn" class="button button-secondary" type="button">刷新 SSO</button>
+              <button id="accountsDownloadBtn" class="button" type="button">批量下载</button>
+              <button id="accountsDeleteBtn" class="button button-danger" type="button">批量删除</button>
+            </div>
+          </div>
+          <div class="filter-bar">
+            <label class="search-field">
+              <span class="meta-label">搜索</span>
+              <input id="accountsSearchInput" type="search" placeholder="搜索邮箱、SSO、任务名称">
+            </label>
+            <label class="filter-field">
+              <span class="meta-label">任务筛选</span>
+              <select id="accountsTaskFilter">
+                <option value="all">全部任务</option>
+              </select>
+            </label>
+            <label class="filter-field">
+              <span class="meta-label">每页数量</span>
+              <select id="accountsPageSize">
+                <option value="10">10</option>
+                <option value="20" selected>20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+          </div>
+          <div id="accountsMeta" class="health-meta">等待加载</div>
+          <div class="accounts-table-wrap">
+            <table class="accounts-table">
+              <thead>
+                <tr>
+                  <th class="select-col"><input id="accountsSelectAll" type="checkbox" aria-label="全选账号"></th>
+                  <th>邮箱</th>
+                  <th>密码</th>
+                  <th>SSO</th>
+                  <th>任务</th>
+                  <th>创建时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="accountsTableBody"></tbody>
+            </table>
+            <div id="accountsEmpty" class="empty hidden">暂无账号</div>
+          </div>
+          <div class="pagination-bar">
+            <div id="accountsPageMeta" class="pagination-meta">第 1 页</div>
+            <div class="pagination-actions">
+              <button id="accountsPrevPageBtn" class="button button-secondary button-small" type="button">上一页</button>
+              <button id="accountsNextPageBtn" class="button button-secondary button-small" type="button">下一页</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel panel-config" data-tab-panel="config">
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">System Settings</div>
+              <h3>参数配置</h3>
+            </div>
+          </div>
+
+          <div class="config-meta-grid">
+            <article class="config-meta-card">
+              <span class="meta-label">Source</span>
+              <strong>{{ source_project }}</strong>
+            </article>
+            <article class="config-meta-card">
+              <span class="meta-label">并发上限</span>
+              <strong>{{ max_concurrent_tasks }}</strong>
+            </article>
+          </div>
+
+          <form id="settingsForm" class="task-form">
+            <label>
+              <span>浏览器代理</span>
+              <input name="browser_proxy" placeholder="例如 http://127.0.0.1:18118">
+            </label>
+            <label>
+              <span>请求代理</span>
+              <input name="proxy" placeholder="例如 http://host:port">
+            </label>
+            <label>
+              <span>邮箱 API Base</span>
+              <input name="temp_mail_api_base" placeholder="https://api.duckmail.sbs">
+            </label>
+            <label>
+              <span>邮箱域名</span>
+              <input name="temp_mail_domain" placeholder="example.com">
+            </label>
+            <label>
+              <span>邮箱管理口令 / DuckMail API Key</span>
+              <input name="temp_mail_admin_password" placeholder="admin password / dk_xxx">
+            </label>
+            <label>
+              <span>站点密码</span>
+              <input name="temp_mail_site_password" placeholder="optional">
+            </label>
+            <div class="form-actions full">
+              <button class="button" type="submit">保存默认配置</button>
+              <div id="settingsMessage" class="form-message"></div>
+            </div>
+          </form>
+
+          <div class="health-block">
+            <div class="panel-head">
+              <div>
+                <div class="eyebrow">Health Check</div>
+                <h3>环境检查</h3>
+              </div>
+              <button id="healthRefreshBtn" class="button button-secondary" type="button">重新检测</button>
+            </div>
+            <div id="healthMeta" class="health-meta">等待检测</div>
+            <div id="healthGrid" class="health-grid"></div>
+          </div>
+
+          <div class="health-block">
+            <div class="panel-head">
+              <div>
+                <div class="eyebrow">Temp Mail</div>
+                <h3>当前任务临时邮箱参数</h3>
+              </div>
+              <button id="toggleMailBtn" class="button button-secondary" type="button">展开临时邮箱参数</button>
+            </div>
+            <div id="detailMeta" class="detail-grid hidden"></div>
+          </div>
+        </section>
+      </section>
+
+      <section class="panel panel-workbench" data-tab-panel="register">
+        <div class="workbench-grid">
+          <section class="panel-card">
+            <div class="panel-head">
+              <div>
+                <div class="eyebrow">Tasks</div>
+                <h3>任务列表</h3>
+              </div>
+              <button id="refreshBtn" class="button button-secondary" type="button">刷新任务</button>
+            </div>
+            <div class="task-toolbar">
+              <div class="task-list-meta">
+                <span>支持查看进度、停止、删除</span>
+                <span id="taskListMetaCount">0 个任务</span>
+              </div>
+              <label class="filter-field task-filter-field">
+                <span class="meta-label">状态筛选</span>
+                <select id="taskStatusFilter">
+                  <option value="all">全部状态</option>
+                  <option value="queued">排队中</option>
+                  <option value="running">运行中</option>
+                  <option value="stopping">停止中</option>
+                  <option value="completed">已完成</option>
+                  <option value="partial">部分完成</option>
+                  <option value="failed">失败</option>
+                  <option value="stopped">已停止</option>
+                </select>
+              </label>
+              <label class="filter-field task-filter-field">
+                <span class="meta-label">每页数量</span>
+                <select id="taskPageSize">
+                  <option value="10">10</option>
+                  <option value="20" selected>20</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </label>
+            </div>
+            <div id="taskList" class="task-list"></div>
+            <div class="pagination-bar">
+              <div id="taskPageMeta" class="pagination-meta">第 1 页</div>
+              <div class="pagination-actions">
+                <button id="taskPrevPageBtn" class="button button-secondary button-small" type="button">上一页</button>
+                <button id="taskNextPageBtn" class="button button-secondary button-small" type="button">下一页</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel-card">
+            <div class="panel-head">
+              <div>
+                <div class="eyebrow">Live Detail</div>
+                <h3 id="detailTitle">实时控制台</h3>
+              </div>
+              <button id="stopBtn" class="button button-danger" type="button" disabled>停止任务</button>
+            </div>
+            <div id="detailSummary" class="summary-grid"></div>
+            <div class="console-wrap">
+              <div class="console-head">实时控制台日志</div>
+              <pre id="consoleOutput" class="console-output">选择任务后显示输出</pre>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    window.__DEFAULTS__ = {{ defaults|safe }};
+  </script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
