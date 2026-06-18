@@ -350,6 +350,11 @@ button {
 }
 
 .task-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 160px 160px;
+  align-items: end;
+  justify-content: stretch;
+  flex-wrap: nowrap;
   margin-bottom: 10px;
 }
 
@@ -545,8 +550,8 @@ button {
 }
 
 .summary-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin-bottom: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin-bottom: 12px;
 }
 
 .detail-grid {
@@ -557,8 +562,8 @@ button {
 .meta-item {
   background: var(--panel-strong);
   border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 12px;
+  border-radius: 10px;
+  padding: 10px 12px;
 }
 
 .meta-item-label {
@@ -580,8 +585,8 @@ button {
 
 .task-card {
   width: 100%;
-  padding: 12px;
-  border-radius: 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
   background: var(--panel-strong);
   border: 1px solid var(--line);
   text-align: left;
@@ -594,13 +599,13 @@ button {
 }
 
 .task-card-progress {
-  margin-top: 8px;
+  margin-top: 6px;
 }
 
 .task-progress-bar {
   overflow: hidden;
   width: 100%;
-  height: 8px;
+  height: 7px;
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.18);
 }
@@ -625,13 +630,13 @@ button {
 }
 
 .task-subrow {
-  margin-top: 6px;
+  margin-top: 4px;
   color: var(--muted);
   font-size: 12px;
 }
 
 .task-actions {
-  margin-top: 8px;
+  margin-top: 6px;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -646,13 +651,13 @@ button {
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
-  border-radius: 14px;
+  border-radius: 10px;
   border: 1px solid var(--line);
   background: #0f172a;
 }
 
 .console-head {
-  padding: 10px 12px;
+  padding: 8px 12px;
   color: #cbd5e1;
   background: rgba(15, 23, 42, 0.85);
   border-bottom: 1px solid rgba(148, 163, 184, 0.12);
@@ -664,9 +669,10 @@ button {
   height: auto;
   min-height: 0;
   overflow: auto;
-  padding: 10px;
+  padding: 12px;
   color: #e2e8f0;
-  font: 10px/1.5 "SFMono-Regular", "IBM Plex Mono", monospace;
+  font: 13px/1.6 "SFMono-Regular", "IBM Plex Mono", monospace;
+  tab-size: 2;
 }
 
 .panel-workbench {
@@ -681,7 +687,7 @@ button {
 
 .workbench-grid {
   display: grid;
-  grid-template-columns: minmax(280px, 0.82fr) minmax(520px, 1.38fr);
+  grid-template-columns: minmax(320px, 0.78fr) minmax(620px, 1.42fr);
   gap: 16px;
   min-height: 0;
 }
@@ -689,7 +695,7 @@ button {
 .panel-card {
   display: flex;
   flex-direction: column;
-  border-radius: 18px;
+  border-radius: 12px;
   padding: 16px;
   min-width: 0;
   min-height: 0;
@@ -782,6 +788,10 @@ button {
 
   .task-filter-field {
     width: 100%;
+  }
+
+  .task-toolbar {
+    grid-template-columns: 1fr;
   }
 
   .pagination-bar,
