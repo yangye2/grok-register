@@ -121,7 +121,7 @@ python DrissionPage_example.py --count 1
 - `apt install xvfb`
 - `apt install chromium-browser` 或 `google-chrome-stable`
 
-只要这一步能成功产出 `sso/*.txt`，说明注册执行链路已经基本通了。
+只要这一步能成功写入脚本目录下的 `accounts.db`，说明注册执行链路已经基本通了。通过控制台创建的任务会直接写入 `apps/console/runtime/console.db`，并在账号管理里展示。
 
 ## 6. 宿主机方式启动控制台
 
@@ -153,5 +153,5 @@ GROK_REGISTER_CONSOLE_HOST=127.0.0.1 ./deploy/start-console.sh
 
 - 任务目录：`apps/console/runtime/tasks/task_<id>/`
 - 控制台日志：`apps/console/runtime/tasks/task_<id>/console.log`
-- 本地 token 文件：`apps/console/runtime/tasks/task_<id>/sso/task_<id>.txt`
+- 本地数据库：`apps/console/runtime/console.db`
 - 主脚本日志：`apps/console/runtime/tasks/task_<id>/logs/`
