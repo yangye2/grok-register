@@ -1,49 +1,63 @@
-# 业务流程
+# 注册、授权、推送 CPA 流程
 
-## 一次完整任务怎么跑
+## 注册任务流程
 
-1. 在控制台或手工配置里提供 3 类关键参数：
-   - 前置网络出口：`browser_proxy` / `proxy`
-   - 临时邮箱：`temp_mail_api_base` / `temp_mail_admin_password` / `temp_mail_domain`
-   - 注册次数：`run.count`
-2. 控制台创建任务后，会生成独立任务目录和独立 `config.json`。
-3. 执行器启动浏览器；如果当前是无头 Linux，优先通过 `Xvfb` 提供显示环境。
-4. 浏览器进入 `x.ai` 注册页，并切到邮箱注册流程。
-5. 执行器调用临时邮箱 API 创建地址。
-6. 把这个邮箱地址填进 `x.ai` 注册页提交。
-7. 轮询临时邮箱，拿到验证码。
-8. 提交验证码，进入资料填写页。
-9. 自动填写随机姓名和密码，完成注册。
-10. 注册成功后从浏览器 cookie 中提取 `sso`。
-11. 把 `sso` 先写入任务目录下的 `sso/task_<id>.txt`。
-12. 同时把完整账号记录写入任务目录下的 `accounts/task_<id>.jsonl`。
-13. 控制台同步导入账号记录到本地 SQLite，支持后续查看和删除。
-14. 控制台持续解析日志，显示当前轮次、成功数、失败数、最近邮箱和错误。
+1. 在控制台配置网络、临时邮箱和 CPA 参数。
+2. 创建注册任务。
+3. 控制台为任务生成独立目录和 `config.json`。
+4. 控制台复制注册执行器、CPA worker 和 `turnstilePatch` 到任务目录。
+5. 注册执行器启动 Chromium。Docker 内默认通过 Xvfb 或 headless Chromium 运行。
+6. 浏览器打开 `https://accounts.x.ai/sign-up?redirect=grok-com`。
+7. 执行器通过临时邮箱 API 创建邮箱。
+8. 浏览器提交邮箱，执行器轮询邮箱验证码。
+9. 浏览器提交验证码，进入资料填写页。
+10. 执行器生成姓名和密码并完成注册。
+11. 注册完成后从浏览器 cookie 中读取 `sso`。
+12. `sso` 写入 `sso/task_<id>.txt`。
+13. 邮箱、密码、姓名、`sso` 写入 `accounts/task_<id>.jsonl`。
+14. 控制台同步 JSONL 到本地 SQLite，账号管理页出现新账号。
 
-## 现阶段卡点通常在哪
+## 注册后自动 CPA 授权
 
-这个业务最常见的失败点不是脚本代码本身，而是外部依赖：
+如果 `cpa_export_enabled=true`，每轮注册成功后会继续执行 CPA 授权：
 
-- 出口 IP 被 `x.ai` 风控
-- 临时邮箱域名被 `x.ai` 明确拒绝
-- 浏览器没走 WARP，但邮箱请求走了，前后链路不一致
-- `Xvfb`、Chrome/Chromium、Python 版本不匹配
-- 本地账号目录或数据库不可写，导致注册成功但账号未入库
+1. 注册执行器把邮箱、密码、当前浏览器 cookie 和 `sso` 传给 `cpa_export.py`。
+2. CPA worker 使用 `cpa_xai` 走 xAI OAuth 授权流程。
+3. 授权文件写入 `cpa_auth_dir`，默认 Docker 路径是 `/workspace/cpa_auths`。
+4. 如果开启 `cpa_copy_to_hotload`，授权文件会复制到 `cpa_hotload_dir`，供本机 CPA 热加载。
+5. 如果开启 `cpa_cloud_upload_enabled`，授权文件会上传到远程 CPA 管理接口。
+6. CPA 结果写回账号 JSONL，控制台同步为 `generated` 或 `uploaded`。
 
-## 什么叫“完全闭环”
+注意：注册后的自动 CPA 授权目前是同步执行。xAI 授权超时会拖慢后续注册轮次，但不会丢失已经注册成功的 `sso` 和账号记录。
 
-在这个项目里，完全闭环指的是：
+## 已有账号授权并推送 CPA
 
-- 有可用网络出口
-- 有能被 `x.ai` 接受的邮箱域名
-- 注册脚本能稳定跑
-- 成功结果本地留档
-- 成功结果自动进入本地账号库
-- 控制台能看到实时状态和日志
+账号管理页的“授权并推送”用于已经存在的账号：
 
-只满足“能注册”还不算闭环；必须能观测、能本地留档、能重复跑批才算闭环。
+1. 控制台读取账号表里的邮箱、密码和 `sso`。
+2. 后台线程加载 `apps/cpa-worker/cpa_export.py`。
+3. 生成 CPA 授权文件。
+4. 按配置决定是否复制到本地 CPA 导入目录。
+5. 按配置决定是否上传到远程 CPA。
+6. 账号表状态更新为：
+   - `running`：授权中
+   - `generated`：已生成本地授权文件
+   - `uploaded`：已推送远程 CPA
+   - `failed`：生成或推送失败
 
-在当前仓库里：
+## 关键配置
 
-- `warp` 已经可以跟随 `docker compose` 一起启动
-- 临时邮箱仍然需要你自己提供，因为不同用户的可用域名和实现方式差异很大
+| 配置 | 作用 |
+| --- | --- |
+| `browser_proxy` | 注册浏览器访问 xAI 使用的代理 |
+| `proxy` | 临时邮箱 API、普通 HTTP 请求使用的代理 |
+| `cpa_proxy` | xAI 授权专用代理；留空时使用 `proxy` |
+| `cpa_headless` | xAI 授权浏览器是否无头运行 |
+| `cpa_auth_dir` | CPA 授权文件生成目录 |
+| `cpa_copy_to_hotload` | 是否复制到本机 CPA 热加载目录 |
+| `cpa_hotload_dir` | 本机 CPA auth 热加载目录 |
+| `cpa_cloud_upload_enabled` | 是否推送到远程 CPA |
+| `cpa_cloud_api_base` / `CPA_CLOUD_API_BASE` | 远程 CPA 管理地址 |
+| `CPA_CLOUD_MANAGEMENT_KEY` | 远程 CPA 管理密钥 |
+
+Docker 内默认代理是 `socks5://warp:1080`。如果环境检查显示代理不可达，优先确认 `warp` 服务已启动、`browser_proxy` 和 `proxy` 都使用容器内地址，而不是宿主机 `127.0.0.1`。

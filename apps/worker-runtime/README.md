@@ -1,15 +1,25 @@
 # worker-runtime
 
-任务运行时环境定义。
+Docker 运行时环境定义。
 
-它的目标不是取代宿主机部署，而是把注册执行器依赖的系统组件明确下来，避免“机器换了就跑不起来”。
+GitHub Actions 使用本目录的 [Dockerfile](Dockerfile) 构建 GHCR 镜像。镜像内包含控制台、注册执行器、CPA worker 和浏览器补丁，不依赖宿主机再挂载源码。
 
-当前运行闭环至少需要：
+## 镜像内置
 
-- `Xvfb`
-- `Chrome/Chromium`
-- Python 3.10+
-- 根目录 [requirements.txt](../../requirements.txt) 依赖
-- 控制台则额外需要 [apps/console/requirements.txt](../console/requirements.txt)
+- Python 3.12
+- Chromium
+- Xvfb
+- 根目录 [requirements.txt](../../requirements.txt)
+- 控制台依赖 [apps/console/requirements.txt](../console/requirements.txt)
+- `apps/console`
+- `apps/register-runner`
+- `apps/cpa-worker`
+- `turnstilePatch`
 
-示例容器定义见 [Dockerfile](Dockerfile)。
+## 默认入口
+
+```bash
+python /workspace/apps/console/app.py
+```
+
+配套部署文件见根目录 [docker-compose.yml](../../docker-compose.yml)，GitHub 镜像说明见 [docs/docker-github-image.md](../../docs/docker-github-image.md)。

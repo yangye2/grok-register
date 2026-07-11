@@ -13,12 +13,16 @@
 - 实时控制台日志
 - 停止任务
 - 删除任务
+- 本地账号管理
+- 已有账号 CPA 授权并推送
+- 环境检查
 
 ## 默认目录
 
 - 控制台代码：[apps/console](.)
 - 运行数据：`apps/console/runtime/`
 - 任务目录：`apps/console/runtime/tasks/task_<id>/`
+- CPA 授权目录：默认 `cpa_auth_dir`，Docker 中建议使用 `/workspace/cpa_auths`
 
 ## 启动
 
@@ -57,6 +61,17 @@ python app.py
 ```
 
 如果你是 Windows，本地注册任务默认会使用仓库根目录下的 `.venv\Scripts\python.exe` 作为运行 Python。
+
+## Docker 启动
+
+根目录 `docker-compose.yml` 默认使用 GitHub 构建镜像：
+
+```bash
+docker compose pull
+docker compose up -d --force-recreate
+```
+
+Docker 镜像构建和部署说明见 [docs/docker-github-image.md](../../docs/docker-github-image.md)。
 
 ## systemd 示例
 

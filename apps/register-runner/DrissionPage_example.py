@@ -1145,6 +1145,8 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, account_output_path=DE
     cpa_result = export_cpa_auth(email, profile.get("password", ""), sso_value)
     account_record["cpa"] = {
         "ok": bool(cpa_result.get("ok")),
+        "skipped": bool(cpa_result.get("skipped")),
+        "reason": cpa_result.get("reason") or "",
         "path": cpa_result.get("cpa_path") or cpa_result.get("path") or "",
         "error": cpa_result.get("error") or "",
         "cloud_uploaded": bool((cpa_result.get("cloud_cpa_upload") or {}).get("ok")),

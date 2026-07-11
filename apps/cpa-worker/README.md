@@ -1,7 +1,16 @@
-# CPA Worker
+# cpa-worker
 
-This module owns xAI OAuth authorization, CPA credential generation, local hotload copies, and remote CPA uploads.
+CPA 授权模块，负责 xAI OAuth 授权、授权文件生成、本地导入和远程 CPA 推送。
 
-`cpa_export.py` is copied with `cpa_xai/` into each isolated registration task. The console also imports it directly for existing-account authorization.
+## 调用方式
 
-Remote CPA credentials are read from `CPA_CLOUD_MANAGEMENT_KEY` when available. Do not store that key in task files.
+- 注册成功后：`apps/register-runner/DrissionPage_example.py` 在任务目录内导入 `cpa_export.py`。
+- 已有账号：控制台账号管理页后台线程直接加载本目录的 `cpa_export.py`。
+
+## 输出
+
+- 默认生成到 `cpa_auth_dir`。
+- 开启 `cpa_copy_to_hotload` 后复制到 `cpa_hotload_dir`。
+- 开启 `cpa_cloud_upload_enabled` 后上传到 `<CPA_CLOUD_API_BASE>/v0/management/auth-files`。
+
+远程密钥优先从 `CPA_CLOUD_MANAGEMENT_KEY` 或 `CLI_PROXY_MANAGEMENT_KEY` 环境变量读取。控制台不会把密钥写入任务配置文件。

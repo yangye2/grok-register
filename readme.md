@@ -124,32 +124,44 @@ For a smooth run on Windows, keep these in place:
 
 If your PC blocks the app, allow it through Windows security settings.
 
-## 🛠️ If you want to use Docker
+## 🛠️ Docker / GitHub Image
 
-If you prefer a container setup, you can run the project with Docker too.
+Root `docker-compose.yml` uses the GitHub Container Registry image by default:
 
-### Basic Docker flow
-
-```bash
-git clone https://github.com/509992828/grok-register.git
-cd grok-register
-cp .env.example .env
-docker compose up -d
+```text
+ghcr.io/yangye2/grok-register:latest
 ```
 
-GitHub Actions will build and publish the Docker image to GitHub Container Registry when code is pushed to `main` / `master`, when a `v*` tag is pushed, or when the workflow is run manually.
+First deployment:
 
-Published image:
+```bash
+cp .env.example .env
+docker compose pull
+docker compose up -d --force-recreate
+```
 
-- `ghcr.io/yangye2/grok-register:latest`
+After pushing code to GitHub and waiting for the image workflow to finish, update the server with:
 
-If you need to change the console port or default proxy, edit `.env` first.
+```bash
+docker compose pull
+docker compose up -d --force-recreate
+```
 
-### After startup
+The workflow is `.github/workflows/docker-image.yml`. It builds `apps/worker-runtime/Dockerfile` and packages the console, register runner, CPA worker, and `turnstilePatch` into the image.
 
-Open these addresses in your browser:
+By default the console port is bound to local host only:
 
-- `http://<your-server-ip>:18600`
+```env
+GROK_STACK_CONSOLE_BIND=127.0.0.1
+```
+
+For remote browser access, set:
+
+```env
+GROK_STACK_CONSOLE_BIND=0.0.0.0
+```
+
+More details: [docs/docker-github-image.md](docs/docker-github-image.md)
 
 ## 🔧 Common settings
 
@@ -172,6 +184,20 @@ The admin password or API key for your temp mail service.
 ### `temp_mail_domain`
 
 The mail domain used for registration.
+
+### CPA / xAI authorization
+
+CPA generation is handled by `apps/cpa-worker`.
+
+Important settings:
+
+- `cpa_export_enabled`: generate CPA auth after successful registration
+- `cpa_proxy`: proxy used only for xAI authorization
+- `cpa_auth_dir`: generated auth file directory
+- `cpa_copy_to_hotload`: copy auth files into a local CPA hotload directory
+- `cpa_cloud_upload_enabled` / `CPA_CLOUD_UPLOAD_ENABLED`: push auth files to remote CPA
+- `CPA_CLOUD_API_BASE`: remote CPA management API base
+- `CPA_CLOUD_MANAGEMENT_KEY`: remote CPA management key
 
 ### Local accounts
 

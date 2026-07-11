@@ -58,6 +58,28 @@ CPA_WORKER_DIR = SOURCE_PROJECT / "apps" / "cpa-worker"
 PROJECT_FILES = ("DrissionPage_example.py", "email_register.py", "cpa_export.py")
 PROJECT_DIRS = ("turnstilePatch", "cpa_xai")
 
+
+def resolve_source_python() -> str:
+    """Resolve the Python executable used by isolated task runners."""
+    configured_python = str(SOURCE_VENV_PYTHON)
+    if SOURCE_VENV_PYTHON.is_file():
+        return configured_python
+    found = shutil.which(configured_python)
+    if found:
+        return found
+    return sys.executable
+
+
+def missing_source_items() -> list[str]:
+    required_paths = [
+        REGISTER_RUNNER_DIR / "DrissionPage_example.py",
+        REGISTER_RUNNER_DIR / "email_register.py",
+        CPA_WORKER_DIR / "cpa_export.py",
+        CPA_WORKER_DIR / "cpa_xai" / "__init__.py",
+        SOURCE_PROJECT / "turnstilePatch" / "manifest.json",
+    ]
+    return [str(path) for path in required_paths if not path.exists()]
+
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"
 STATUS_STOPPING = "stopping"
@@ -219,6 +241,42 @@ def load_source_defaults() -> dict[str, Any]:
         value = os.getenv(env_name)
         if value is not None:
             base[key] = value
+
+    string_env_map = {
+        "cpa_auth_dir": "GROK_REGISTER_DEFAULT_CPA_AUTH_DIR",
+        "cpa_hotload_dir": "GROK_REGISTER_DEFAULT_CPA_HOTLOAD_DIR",
+        "cpa_proxy": "GROK_REGISTER_DEFAULT_CPA_PROXY",
+        "cpa_cloud_api_base": "CPA_CLOUD_API_BASE",
+    }
+    for key, env_name in string_env_map.items():
+        value = os.getenv(env_name)
+        if value is not None:
+            base[key] = value
+
+    bool_env_map = {
+        "cpa_export_enabled": "GROK_REGISTER_DEFAULT_CPA_EXPORT_ENABLED",
+        "cpa_copy_to_hotload": "GROK_REGISTER_DEFAULT_CPA_COPY_TO_HOTLOAD",
+        "cpa_headless": "GROK_REGISTER_DEFAULT_CPA_HEADLESS",
+        "cpa_cloud_upload_enabled": "CPA_CLOUD_UPLOAD_ENABLED",
+    }
+    for key, env_name in bool_env_map.items():
+        value = os.getenv(env_name)
+        if value is not None:
+            base[key] = value.strip().lower() in {"1", "true", "yes", "on"}
+
+    int_env_map = {
+        "cpa_mint_timeout_sec": "GROK_REGISTER_DEFAULT_CPA_MINT_TIMEOUT_SEC",
+        "cpa_cloud_upload_timeout": "CPA_CLOUD_UPLOAD_TIMEOUT",
+        "cpa_cloud_upload_retries": "CPA_CLOUD_UPLOAD_RETRIES",
+    }
+    for key, env_name in int_env_map.items():
+        value = os.getenv(env_name)
+        if value is None:
+            continue
+        try:
+            base[key] = int(value)
+        except ValueError:
+            pass
 
     return base
 
@@ -585,6 +643,48 @@ def sync_account_records_for_task(row: sqlite3.Row) -> None:
             ),
         )
 
+        cpa_record = record.get("cpa") if isinstance(record.get("cpa"), dict) else {}
+        if cpa_record:
+            if cpa_record.get("ok"):
+                cpa_status = "uploaded" if cpa_record.get("cloud_uploaded") else "generated"
+                cpa_error = str(cpa_record.get("error") or "")
+            elif cpa_record.get("skipped"):
+                cpa_status = "not_started"
+                cpa_error = str(cpa_record.get("reason") or "skipped")
+            elif cpa_record.get("queued"):
+                cpa_status = "queued"
+                cpa_error = str(cpa_record.get("error") or "")
+            else:
+                cpa_status = "failed"
+                cpa_error = str(cpa_record.get("error") or "")
+
+            existing = fetch_one(
+                "SELECT cpa_status FROM accounts WHERE task_id = ? AND email = ? AND sso = ?",
+                (int(row["id"]), email, sso),
+            )
+            existing_status = str(existing["cpa_status"] or "not_started") if existing else "not_started"
+            can_update = existing_status in {"not_started", "queued", "running", "failed"} or cpa_status in {
+                "generated",
+                "uploaded",
+            }
+            if can_update:
+                execute_no_return(
+                    """
+                    UPDATE accounts
+                    SET cpa_status = ?, cpa_path = ?, cpa_error = ?, cpa_updated_at = ?
+                    WHERE task_id = ? AND email = ? AND sso = ?
+                    """,
+                    (
+                        cpa_status,
+                        str(cpa_record.get("path") or ""),
+                        cpa_error,
+                        now_iso(),
+                        int(row["id"]),
+                        email,
+                        sso,
+                    ),
+                )
+
 
 def sync_all_account_records() -> None:
     rows = fetch_all("SELECT * FROM tasks ORDER BY id ASC")
@@ -652,6 +752,18 @@ def serialize_account(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def normalize_console_cpa_paths(config: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(config)
+    for key in ("cpa_auth_dir", "cpa_hotload_dir"):
+        raw = str(normalized.get(key) or "").strip()
+        if not raw:
+            continue
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            normalized[key] = str((SOURCE_PROJECT / path).resolve())
+    return normalized
+
+
 def run_account_cpa_export(account_id: int) -> None:
     """Mint and optionally push CPA credentials for one stored account."""
     try:
@@ -673,11 +785,15 @@ def run_account_cpa_export(account_id: int) -> None:
         cpa_export = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cpa_export)
 
+        account_cpa_config = normalize_console_cpa_paths(merged_defaults())
+        if not str(account_cpa_config.get("cpa_auth_dir") or "").strip():
+            account_cpa_config["cpa_auth_dir"] = str(SOURCE_PROJECT / "cpa_auths")
+
         result = cpa_export.export_cpa_xai_for_account(
             email,
             password,
             sso=sso,
-            config={**merged_defaults(), "cpa_auth_dir": str(SOURCE_PROJECT / "cpa_auths")},
+            config=account_cpa_config,
             log_callback=lambda message: print(f"[account-cpa:{account_id}] {message}", flush=True),
         )
         if not result.get("ok"):
@@ -701,16 +817,6 @@ def run_account_cpa_export(account_id: int) -> None:
                 account_id,
             ),
         )
-        cpa = record.get("cpa") if isinstance(record.get("cpa"), dict) else {}
-        if cpa:
-            status = "uploaded" if cpa.get("cloud_uploaded") else "generated" if cpa.get("ok") else "queued" if cpa.get("queued") else "failed"
-            execute_no_return(
-                """
-                UPDATE accounts SET cpa_status = ?, cpa_path = ?, cpa_error = ?, cpa_updated_at = ?
-                WHERE task_id = ? AND email = ? AND sso = ?
-                """,
-                (status, str(cpa.get("path") or ""), str(cpa.get("error") or ""), now_iso(), int(row["id"]), email, sso),
-            )
     except Exception as exc:
         execute_no_return(
             "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
@@ -890,6 +996,10 @@ def delete_task_files(row: sqlite3.Row) -> None:
 
 
 def copy_source_to_task_dir(task_dir: Path, task_config: dict[str, Any]) -> None:
+    missing = missing_source_items()
+    if missing:
+        raise FileNotFoundError(f"Source files missing: {', '.join(missing)}")
+
     task_dir.mkdir(parents=True, exist_ok=True)
     for file_name in PROJECT_FILES:
         source_dir = CPA_WORKER_DIR if file_name == "cpa_export.py" else REGISTER_RUNNER_DIR
@@ -1001,10 +1111,7 @@ class TaskSupervisor:
 
         output_path = task_dir / "sso" / f"task_{task_id}.txt"
         account_output_path = task_dir / "accounts" / f"task_{task_id}.jsonl"
-        configured_python = str(SOURCE_VENV_PYTHON)
-        source_python = configured_python
-        if not SOURCE_VENV_PYTHON.is_file() and not shutil.which(configured_python):
-            source_python = sys.executable
+        source_python = resolve_source_python()
         command = [
             source_python,
             str(task_dir / "DrissionPage_example.py"),
@@ -1141,7 +1248,8 @@ def api_meta() -> dict[str, Any]:
         "defaults": public_defaults(),
         "settings": {key: value for key, value in read_settings().items() if key != "cpa_cloud_management_key"},
         "source_project": str(SOURCE_PROJECT),
-        "python_path": str(SOURCE_VENV_PYTHON),
+        "python_path": resolve_source_python(),
+        "configured_python_path": str(SOURCE_VENV_PYTHON),
         "max_concurrent_tasks": MAX_CONCURRENT_TASKS,
     }
 
@@ -1259,8 +1367,9 @@ def list_tasks(
 def create_task(payload: TaskCreate) -> dict[str, Any]:
     if not SOURCE_PROJECT.exists():
         raise HTTPException(status_code=500, detail=f"Source project not found: {SOURCE_PROJECT}")
-    if not SOURCE_VENV_PYTHON.exists():
-        raise HTTPException(status_code=500, detail=f"Python not found: {SOURCE_VENV_PYTHON}")
+    missing = missing_source_items()
+    if missing:
+        raise HTTPException(status_code=500, detail=f"Source files missing: {', '.join(missing)}")
     task_config = build_task_config(payload)
     created_at = now_iso()
     task_id = execute(

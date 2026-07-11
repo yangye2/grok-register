@@ -2,17 +2,26 @@
 
 注册执行器模块。
 
-当前仓库里真正承担注册动作的仍然是根目录下的 [DrissionPage_example.py](../../DrissionPage_example.py) 和 [email_register.py](../../email_register.py)。控制台新建任务时，会把这两份运行文件复制到独立任务目录，再按任务配置生成 `config.json` 后执行。
+控制台新建任务时，会把本目录文件复制到独立任务目录执行：
 
-这个目录保留为后续拆分点，职责建议固定为：
+- `DrissionPage_example.py`
+- `email_register.py`
 
-- 接收编排层下发的任务参数
-- 准备运行目录、浏览器环境和日志目录
-- 执行注册主流程
-- 产出 `sso`、运行日志和状态事件
+任务运行时还会一并复制：
 
-当前闭环里它对应的实际文件：
+- `apps/cpa-worker/cpa_export.py`
+- `apps/cpa-worker/cpa_xai/`
+- `turnstilePatch/`
 
-- 主流程：[DrissionPage_example.py](../../DrissionPage_example.py)
-- 邮箱适配：[email_register.py](../../email_register.py)
-- 浏览器补丁：[turnstilePatch/script.js](../../turnstilePatch/script.js)
+## 职责
+
+- 启动 Chromium / DrissionPage
+- 访问 xAI 注册页
+- 创建临时邮箱并获取验证码
+- 填写注册资料
+- 获取 `sso`
+- 写入 `sso/task_<id>.txt`
+- 写入 `accounts/task_<id>.jsonl`
+- 注册成功后按配置调用 CPA worker 生成授权文件
+
+根目录同名脚本保留为兼容入口；控制台和 Docker 镜像使用本目录。
