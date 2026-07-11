@@ -17,10 +17,7 @@ services:
       - warp
 
   console:
-    build:
-      context: .
-      dockerfile: apps/worker-runtime/Dockerfile
-    image: grok-register:local
+    image: ${GROK_REGISTER_IMAGE:-ghcr.io/yangye2/grok-register:latest}
     working_dir: /workspace
     command: python /workspace/apps/console/app.py
     environment:
