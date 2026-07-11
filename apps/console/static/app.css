@@ -492,10 +492,31 @@ button {
   background: var(--panel-strong);
 }
 
+.account-cpa-log-panel {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel-strong);
+}
+
+.account-cpa-log {
+  margin: 10px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 12px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font: 11px/1.55 "SFMono-Regular", "IBM Plex Mono", monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .accounts-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 900px;
+  min-width: 980px;
 }
 
 .accounts-table th,
@@ -571,13 +592,14 @@ button {
 .meta-item-value { margin-top: 6px; word-break: break-word; }
 
 .task-list {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   display: grid;
   gap: 8px;
   align-content: start;
   min-height: 0;
-  max-height: none;
-  overflow: auto;
+  max-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .task-card {
@@ -650,8 +672,9 @@ button {
 
 .console-wrap {
   display: flex;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   flex-direction: column;
+  height: 100%;
   overflow: hidden;
   min-height: 0;
   border-radius: 14px;
@@ -667,11 +690,13 @@ button {
 }
 
 .console-output {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   margin: 0;
-  height: auto;
+  height: 100%;
   min-height: 0;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 10px;
   color: #e2e8f0;
   font: 10px/1.5 "SFMono-Regular", "IBM Plex Mono", monospace;
@@ -681,6 +706,7 @@ button {
   display: grid;
   gap: 20px;
   min-height: 0;
+  overflow: hidden;
   padding: 0;
   background: transparent;
   border: 0;
@@ -691,12 +717,16 @@ button {
   display: grid;
   grid-template-columns: minmax(280px, 0.82fr) minmax(520px, 1.38fr);
   gap: 16px;
+  align-items: stretch;
+  height: min(760px, max(520px, calc(100vh - 190px)));
   min-height: 0;
+  overflow: hidden;
 }
 
 .panel-card {
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   border-radius: 18px;
   padding: 16px;
   min-width: 0;
@@ -749,15 +779,21 @@ button {
   .workbench-grid,
   .panel-card,
   .console-wrap {
+    height: auto;
+    max-height: none;
     min-height: unset;
+    overflow: visible;
   }
 
   .task-list {
+    flex: none;
     max-height: 420px;
+    overflow: auto;
   }
 
   .console-output {
     height: 420px;
+    max-height: 420px;
     flex: none;
   }
 }

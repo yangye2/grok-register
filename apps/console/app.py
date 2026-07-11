@@ -205,6 +205,7 @@ def init_db() -> None:
             ("cpa_path", "TEXT"),
             ("cpa_uploaded_at", "TEXT"),
             ("cpa_error", "TEXT"),
+            ("cpa_log", "TEXT"),
             ("cpa_updated_at", "TEXT"),
         ):
             if name not in columns:
@@ -672,10 +673,11 @@ def sync_account_records_for_task(row: sqlite3.Row) -> None:
                 (int(row["id"]), email, sso),
             )
             existing_status = str(row_get(existing, "cpa_status", "not_started") or "not_started")
-            can_update = existing_status in {"not_started", "queued", "running", "failed"} or cpa_status in {
-                "generated",
-                "uploaded",
-            }
+            can_update = (
+                existing_status in {"not_started", "queued", "running", "failed"}
+                or (existing_status == "generated" and cpa_status == "uploaded")
+                or (existing_status == "uploaded" and cpa_status == "uploaded")
+            )
             if can_update:
                 uploaded_at = now_iso() if cpa_status == "uploaded" else str(row_get(existing, "cpa_uploaded_at", "") or "")
                 execute_no_return(
@@ -759,8 +761,27 @@ def serialize_account(row: sqlite3.Row) -> dict[str, Any]:
         "cpa_path": row_get(row, "cpa_path", "") or "",
         "cpa_uploaded_at": row_get(row, "cpa_uploaded_at", "") or "",
         "cpa_error": row_get(row, "cpa_error", "") or "",
+        "cpa_log": row_get(row, "cpa_log", "") or "",
         "cpa_updated_at": row_get(row, "cpa_updated_at", "") or "",
     }
+
+
+def append_account_cpa_log(account_id: int, message: str) -> None:
+    line = str(message or "").strip()
+    if not line:
+        return
+    stamped = f"[{now_iso()}] {line}"
+    with db_lock, get_conn() as conn:
+        row = conn.execute("SELECT cpa_log FROM accounts WHERE id = ?", (account_id,)).fetchone()
+        existing = str(row_get(row, "cpa_log", "") or "")
+        lines = [item for item in existing.splitlines() if item.strip()]
+        lines.append(stamped)
+        kept = lines[-400:]
+        conn.execute(
+            "UPDATE accounts SET cpa_log = ?, cpa_updated_at = ? WHERE id = ?",
+            ("\n".join(kept), now_iso(), account_id),
+        )
+        conn.commit()
 
 
 def normalize_console_cpa_paths(config: dict[str, Any]) -> dict[str, Any]:
@@ -775,8 +796,64 @@ def normalize_console_cpa_paths(config: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _sanitize_file_segment(value: str) -> str:
+    out: list[str] = []
+    for ch in str(value or "").strip():
+        if ("a" <= ch <= "z") or ("A" <= ch <= "Z") or ("0" <= ch <= "9") or ch in {"@", ".", "_", "-"}:
+            out.append(ch)
+        else:
+            out.append("-")
+    return "".join(out).strip("-")
+
+
+def load_cpa_export_module():
+    if str(SOURCE_PROJECT) not in sys.path:
+        sys.path.insert(0, str(SOURCE_PROJECT))
+    module_path = CPA_WORKER_DIR / "cpa_export.py"
+    if not module_path.is_file():
+        raise FileNotFoundError(f"CPA module not found: {module_path}")
+    spec = importlib.util.spec_from_file_location("console_cpa_export", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load CPA module: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def resolve_account_cpa_path(row: sqlite3.Row) -> Path | None:
+    raw_path = str(row_get(row, "cpa_path", "") or "").strip()
+    if raw_path:
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = (SOURCE_PROJECT / path).resolve()
+        if path.is_file():
+            return path
+
+    email = str(row_get(row, "email", "") or "").strip()
+    if not email:
+        return None
+
+    defaults = normalize_console_cpa_paths(merged_defaults())
+    filename = f"xai-{_sanitize_file_segment(email)}.json"
+    for key in ("cpa_auth_dir", "cpa_hotload_dir"):
+        dir_raw = str(defaults.get(key) or "").strip()
+        if not dir_raw:
+            continue
+        directory = Path(dir_raw).expanduser()
+        if not directory.is_absolute():
+            directory = (SOURCE_PROJECT / directory).resolve()
+        candidate = directory / filename
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def run_account_cpa_export(account_id: int) -> None:
     """Mint and optionally push CPA credentials for one stored account."""
+    def account_log(message: str) -> None:
+        print(f"[account-cpa:{account_id}] {message}", flush=True)
+        append_account_cpa_log(account_id, message)
+
     try:
         row = account_row(account_id)
         email = str(row["email"] or "").strip()
@@ -784,17 +861,9 @@ def run_account_cpa_export(account_id: int) -> None:
         sso = str(row["sso"] or "").strip()
         if not email or not password or not sso:
             raise ValueError("账号缺少邮箱、密码或 SSO，无法执行 CPA 授权")
+        append_account_cpa_log(account_id, f"开始 CPA 授权并推送: {email}")
 
-        if str(SOURCE_PROJECT) not in sys.path:
-            sys.path.insert(0, str(SOURCE_PROJECT))
-        module_path = CPA_WORKER_DIR / "cpa_export.py"
-        if not module_path.is_file():
-            raise FileNotFoundError(f"CPA module not found: {module_path}")
-        spec = importlib.util.spec_from_file_location("console_cpa_export", module_path)
-        if spec is None or spec.loader is None:
-            raise RuntimeError(f"Unable to load CPA module: {module_path}")
-        cpa_export = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cpa_export)
+        cpa_export = load_cpa_export_module()
 
         account_cpa_config = normalize_console_cpa_paths(merged_defaults())
         if not str(account_cpa_config.get("cpa_auth_dir") or "").strip():
@@ -805,9 +874,10 @@ def run_account_cpa_export(account_id: int) -> None:
             password,
             sso=sso,
             config=account_cpa_config,
-            log_callback=lambda message: print(f"[account-cpa:{account_id}] {message}", flush=True),
+            log_callback=account_log,
         )
         if result.get("skipped"):
+            account_log(f"CPA 授权跳过: {result.get('reason') or 'skipped'}")
             execute_no_return(
                 """
                 UPDATE accounts
@@ -830,6 +900,12 @@ def run_account_cpa_export(account_id: int) -> None:
         cloud = result.get("cloud_cpa_upload") or {}
         status = "uploaded" if cloud.get("ok") else "generated"
         cloud_error = "" if cloud.get("ok") or cloud.get("skipped") else f"远程推送失败: {cloud.get('error') or cloud}"
+        if status == "uploaded":
+            account_log(f"CPA 授权文件已推送远程: {result.get('cpa_path') or result.get('path') or ''}")
+        elif cloud_error:
+            account_log(cloud_error)
+        else:
+            account_log(f"CPA 授权文件已生成: {result.get('cpa_path') or result.get('path') or ''}")
         execute_no_return(
             """
             UPDATE accounts
@@ -846,9 +922,84 @@ def run_account_cpa_export(account_id: int) -> None:
             ),
         )
     except Exception as exc:
+        append_account_cpa_log(account_id, f"CPA 授权失败: {exc}")
         execute_no_return(
             "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
             ("failed", str(exc), now_iso(), account_id),
+        )
+    finally:
+        with cpa_jobs_lock:
+            cpa_jobs.pop(account_id, None)
+
+
+def run_account_cpa_upload(account_id: int) -> None:
+    """Upload an existing CPA auth file to remote CPA management."""
+    def account_log(message: str) -> None:
+        print(f"[account-cpa-upload:{account_id}] {message}", flush=True)
+        append_account_cpa_log(account_id, message)
+
+    cpa_path: Path | None = None
+    try:
+        row = account_row(account_id)
+        email = str(row["email"] or "").strip()
+        cpa_path = resolve_account_cpa_path(row)
+        if not email:
+            raise ValueError("账号缺少邮箱，无法执行 CPA 推送")
+        if cpa_path is None:
+            raise ValueError("未找到已生成的 CPA 授权文件，请先生成授权")
+
+        account_log(f"开始推送 CPA 授权文件: {cpa_path.name}")
+        cpa_export = load_cpa_export_module()
+        account_cpa_config = normalize_console_cpa_paths(merged_defaults())
+        account_cpa_config["cpa_cloud_upload_enabled"] = True
+
+        result = cpa_export.upload_cpa_auth_to_cloud(cpa_path, account_cpa_config, account_log)
+        if result.get("ok"):
+            account_log(f"CPA 授权文件已推送远程: {cpa_path.name}")
+            execute_no_return(
+                """
+                UPDATE accounts
+                SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = ?, cpa_updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    "uploaded",
+                    str(cpa_path),
+                    now_iso(),
+                    "",
+                    now_iso(),
+                    account_id,
+                ),
+            )
+            return
+
+        if result.get("skipped"):
+            raise RuntimeError(str(result.get("reason") or "push skipped"))
+
+        error = str(result.get("error") or "upload failed")
+        account_log(f"CPA 推送失败: {error}")
+        execute_no_return(
+            """
+            UPDATE accounts
+            SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = ?, cpa_updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                "generated",
+                str(cpa_path),
+                str(row_get(row, "cpa_uploaded_at", "") or ""),
+                error,
+                now_iso(),
+                account_id,
+            ),
+        )
+    except Exception as exc:
+        append_account_cpa_log(account_id, f"CPA 推送失败: {exc}")
+        status = "generated" if cpa_path is not None else "failed"
+        # cpa_path may already exist even if upload failed; keep the generated state.
+        execute_no_return(
+            "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
+            (status, str(exc), now_iso(), account_id),
         )
     finally:
         with cpa_jobs_lock:
@@ -1241,8 +1392,8 @@ supervisor = TaskSupervisor()
 async def lifespan(_: FastAPI):
     init_db()
     execute_no_return(
-        "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE cpa_status = ?",
-        ("failed", "Console restarted while CPA authorization was running; retry the operation.", now_iso(), "running"),
+        "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE cpa_status IN (?, ?)",
+        ("failed", "Console restarted while CPA task was running; retry the operation.", now_iso(), "running", "uploading"),
     )
     sync_all_account_records()
     supervisor.start()
@@ -1352,13 +1503,33 @@ def authorize_account_cpa(account_id: int) -> dict[str, Any]:
         if active and active.is_alive():
             raise HTTPException(status_code=409, detail="CPA 授权任务正在执行")
         execute_no_return(
-            "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
+            "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_log = '', cpa_updated_at = ? WHERE id = ?",
             ("running", now_iso(), account_id),
         )
         worker = threading.Thread(target=run_account_cpa_export, args=(account_id,), daemon=True)
         cpa_jobs[account_id] = worker
         worker.start()
     return {"ok": True, "status": "running", "account_id": account_id}
+
+
+@app.post("/api/accounts/{account_id}/cpa/upload")
+def upload_existing_account_cpa(account_id: int) -> dict[str, Any]:
+    row = account_row(account_id)
+    if resolve_account_cpa_path(row) is None:
+        raise HTTPException(status_code=400, detail="未找到已生成的 CPA 授权文件，请先生成授权")
+    with cpa_jobs_lock:
+        active = cpa_jobs.get(account_id)
+        if active and active.is_alive():
+            raise HTTPException(status_code=409, detail="CPA 任务正在执行")
+        execute_no_return(
+            "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
+            ("uploading", now_iso(), account_id),
+        )
+        append_account_cpa_log(account_id, "手动 CPA 推送任务已启动")
+        worker = threading.Thread(target=run_account_cpa_upload, args=(account_id,), daemon=True)
+        cpa_jobs[account_id] = worker
+        worker.start()
+    return {"ok": True, "status": "uploading", "account_id": account_id}
 
 
 @app.get("/api/tasks")

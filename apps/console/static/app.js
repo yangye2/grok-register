@@ -10,6 +10,7 @@
     accountPageSize: 20,
     accountTotal: 0,
     accountTotalPages: 1,
+    cpaLogAccountId: null,
     taskStatusFilter: "all",
     taskPage: 1,
     taskPageSize: 20,
@@ -44,6 +45,10 @@
   const accountsSelectAllEl = document.getElementById("accountsSelectAll");
   const accountsTableBodyEl = document.getElementById("accountsTableBody");
   const accountsEmptyEl = document.getElementById("accountsEmpty");
+  const accountCpaLogPanelEl = document.getElementById("accountCpaLogPanel");
+  const accountCpaLogTitleEl = document.getElementById("accountCpaLogTitle");
+  const accountCpaLogEl = document.getElementById("accountCpaLog");
+  const accountCpaLogCloseBtnEl = document.getElementById("accountCpaLogCloseBtn");
   const accountsSearchInputEl = document.getElementById("accountsSearchInput");
   const accountsTaskFilterEl = document.getElementById("accountsTaskFilter");
   const accountsPageSizeEl = document.getElementById("accountsPageSize");
@@ -342,11 +347,33 @@
     `).join("");
   }
 
+  function cpaStatusLabel(status) {
+    return ({
+      not_started: "未授权",
+      queued: "排队中",
+      running: "授权中",
+      uploading: "推送中",
+      generated: "已生成",
+      uploaded: "已推送",
+      failed: "失败",
+    }[status] || status || "未授权");
+  }
+
+  function isCpaBusy(account) {
+    return account.cpa_status === "running" || account.cpa_status === "uploading";
+  }
+
+  function canPushExistingCpa(account) {
+    const hasGeneratedAuth = Boolean(account.cpa_path) || account.cpa_status === "generated";
+    return hasGeneratedAuth && !["running", "uploading", "uploaded"].includes(account.cpa_status);
+  }
+
   function renderAccounts() {
     const validIds = new Set(state.accounts.map((account) => account.id));
     state.selectedAccountIds = new Set(
       Array.from(state.selectedAccountIds).filter((id) => validIds.has(id))
     );
+    renderAccountCpaLog();
 
     const start = state.accountTotal ? ((state.accountPage - 1) * state.accountPageSize) + 1 : 0;
     const end = state.accountTotal ? Math.min(state.accountPage * state.accountPageSize, state.accountTotal) : 0;
@@ -370,15 +397,6 @@
     }
     accountsEmptyEl.classList.add("hidden");
 
-    const cpaStatusLabel = (status) => ({
-      not_started: "未授权",
-      queued: "排队中",
-      running: "授权中",
-      generated: "已生成",
-      uploaded: "已推送",
-      failed: "失败",
-    }[status] || status || "未授权");
-
     accountsTableBodyEl.innerHTML = state.accounts.map((account) => `
       <tr>
         <td class="select-col">
@@ -392,7 +410,9 @@
         <td title="${escapeHtml(account.cpa_error || account.cpa_path || "")}">${escapeHtml(cpaStatusLabel(account.cpa_status))}</td>
         <td class="account-actions">
           <button class="button button-small" type="button" data-download-account-id="${account.id}">下载</button>
-          <button class="button button-secondary button-small" type="button" data-cpa-account-id="${account.id}" ${account.cpa_status === "running" ? "disabled" : ""}>授权并推送</button>
+          <button class="button button-secondary button-small" type="button" data-cpa-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>授权并推送</button>
+          ${canPushExistingCpa(account) ? `<button class="button button-secondary button-small" type="button" data-cpa-upload-account-id="${account.id}">推送</button>` : ""}
+          <button class="button button-secondary button-small" type="button" data-cpa-log-account-id="${account.id}">日志</button>
           <button class="button button-danger button-small" type="button" data-delete-account-id="${account.id}">删除</button>
         </td>
       </tr>
@@ -440,6 +460,7 @@
         button.disabled = true;
         try {
           await fetchJson(`/api/accounts/${account.id}/cpa`, { method: "POST" });
+          state.cpaLogAccountId = account.id;
           accountsMetaEl.textContent = `账号 ${account.email} 的 CPA 授权任务已开始`;
           await refreshAccounts();
         } catch (error) {
@@ -448,6 +469,62 @@
         }
       });
     });
+
+    accountsTableBodyEl.querySelectorAll("[data-cpa-upload-account-id]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const account = state.accounts.find((item) => item.id === Number(button.dataset.cpaUploadAccountId));
+        if (!account) return;
+        const confirmed = window.confirm(`确认将账号 ${account.email} 已生成的 CPA 授权文件推送到远程 CPA 吗？`);
+        if (!confirmed) return;
+        button.disabled = true;
+        try {
+          await fetchJson(`/api/accounts/${account.id}/cpa/upload`, { method: "POST" });
+          state.cpaLogAccountId = account.id;
+          accountsMetaEl.textContent = `账号 ${account.email} 的 CPA 推送任务已开始`;
+          await refreshAccounts();
+        } catch (error) {
+          accountsMetaEl.textContent = `CPA 推送启动失败: ${error.message}`;
+          button.disabled = false;
+        }
+      });
+    });
+
+    accountsTableBodyEl.querySelectorAll("[data-cpa-log-account-id]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.cpaLogAccountId = Number(button.dataset.cpaLogAccountId);
+        renderAccountCpaLog(true);
+      });
+    });
+  }
+
+  function renderAccountCpaLog(scrollToBottom = false) {
+    if (!accountCpaLogPanelEl || !accountCpaLogEl || !accountCpaLogTitleEl) {
+      return;
+    }
+    if (!state.cpaLogAccountId) {
+      accountCpaLogPanelEl.classList.add("hidden");
+      return;
+    }
+    const account = state.accounts.find((item) => item.id === state.cpaLogAccountId);
+    if (!account) {
+      accountCpaLogPanelEl.classList.add("hidden");
+      return;
+    }
+    accountCpaLogPanelEl.classList.remove("hidden");
+    accountCpaLogTitleEl.textContent = `CPA 日志 · ${account.email || `#${account.id}`}`;
+    const lines = [];
+    lines.push(`状态: ${cpaStatusLabel(account.cpa_status)}`);
+    if (account.cpa_path) lines.push(`文件: ${account.cpa_path}`);
+    if (account.cpa_uploaded_at) lines.push(`推送时间: ${account.cpa_uploaded_at}`);
+    if (account.cpa_error) lines.push(`错误: ${account.cpa_error}`);
+    if (account.cpa_log) {
+      lines.push("");
+      lines.push(account.cpa_log);
+    }
+    accountCpaLogEl.textContent = lines.join("\n") || "暂无日志";
+    if (scrollToBottom || isCpaBusy(account)) {
+      accountCpaLogEl.scrollTop = accountCpaLogEl.scrollHeight;
+    }
   }
 
   function downloadSsoFile(accounts, filename) {
@@ -617,6 +694,12 @@
   refreshBtnEl.addEventListener("click", refreshAll);
   healthRefreshBtnEl.addEventListener("click", refreshHealth);
   accountsRefreshBtnEl.addEventListener("click", refreshAccounts);
+  if (accountCpaLogCloseBtnEl) {
+    accountCpaLogCloseBtnEl.addEventListener("click", () => {
+      state.cpaLogAccountId = null;
+      renderAccountCpaLog();
+    });
+  }
   accountsDownloadBtnEl.addEventListener("click", () => {
     const selected = state.accounts.filter((account) => state.selectedAccountIds.has(account.id));
     downloadSsoFile(selected, `sso_selected_${Date.now()}.txt`);
