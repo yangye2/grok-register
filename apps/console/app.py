@@ -137,6 +137,15 @@ def execute_no_return(query: str, params: tuple[Any, ...] = ()) -> None:
         conn.commit()
 
 
+def row_get(row: sqlite3.Row | None, key: str, default: Any = "") -> Any:
+    if row is None:
+        return default
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
 def init_db() -> None:
     ensure_dirs()
     with db_lock, get_conn() as conn:
@@ -659,16 +668,16 @@ def sync_account_records_for_task(row: sqlite3.Row) -> None:
                 cpa_error = str(cpa_record.get("error") or "")
 
             existing = fetch_one(
-                "SELECT cpa_status FROM accounts WHERE task_id = ? AND email = ? AND sso = ?",
+                "SELECT cpa_status, cpa_uploaded_at FROM accounts WHERE task_id = ? AND email = ? AND sso = ?",
                 (int(row["id"]), email, sso),
             )
-            existing_status = str(existing["cpa_status"] or "not_started") if existing else "not_started"
+            existing_status = str(row_get(existing, "cpa_status", "not_started") or "not_started")
             can_update = existing_status in {"not_started", "queued", "running", "failed"} or cpa_status in {
                 "generated",
                 "uploaded",
             }
             if can_update:
-                uploaded_at = now_iso() if cpa_status == "uploaded" else str(existing["cpa_uploaded_at"] or "") if existing else ""
+                uploaded_at = now_iso() if cpa_status == "uploaded" else str(row_get(existing, "cpa_uploaded_at", "") or "")
                 execute_no_return(
                     """
                     UPDATE accounts
@@ -746,11 +755,11 @@ def serialize_account(row: sqlite3.Row) -> dict[str, Any]:
         "source_file": row["source_file"] or "",
         "created_at": row["created_at"],
         "imported_at": row["imported_at"],
-        "cpa_status": row["cpa_status"] or "not_started",
-        "cpa_path": row["cpa_path"] or "",
-        "cpa_uploaded_at": row["cpa_uploaded_at"] or "",
-        "cpa_error": row["cpa_error"] or "",
-        "cpa_updated_at": row["cpa_updated_at"] or "",
+        "cpa_status": row_get(row, "cpa_status", "not_started") or "not_started",
+        "cpa_path": row_get(row, "cpa_path", "") or "",
+        "cpa_uploaded_at": row_get(row, "cpa_uploaded_at", "") or "",
+        "cpa_error": row_get(row, "cpa_error", "") or "",
+        "cpa_updated_at": row_get(row, "cpa_updated_at", "") or "",
     }
 
 
