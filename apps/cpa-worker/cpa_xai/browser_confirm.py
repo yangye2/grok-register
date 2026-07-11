@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -32,6 +34,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 LogFn = Callable[[str], None]
+_VIRTUAL_DISPLAY = None
 
 
 def _noop_log(_: str) -> None:
@@ -61,6 +64,8 @@ def create_standalone_page(
         ) from e
 
     opts = None
+    proxy_applied_by_options = False
+    browser_path_applied_by_options = False
     # Project root = parent of this package (./cpa_xai → ../)
     _pkg_root = Path(__file__).resolve().parents[1]
     try:
@@ -80,6 +85,23 @@ def create_standalone_page(
     except Exception as e:  # noqa: BLE001
         log(f"register options probe failed: {e}")
         opts = None
+
+    if opts is None:
+        try:
+            from .browser_options import create_browser_options
+
+            opts = create_browser_options(
+                base_dir=_pkg_root,
+                browser_proxy=proxy,
+                headless=headless,
+                log=log,
+            )
+            proxy_applied_by_options = bool(proxy)
+            browser_path_applied_by_options = True
+            log("using register-style browser options")
+        except Exception as e:  # noqa: BLE001
+            log(f"register-style browser options unavailable: {e}")
+            opts = None
 
     if opts is None:
         opts = ChromiumOptions()
@@ -106,6 +128,17 @@ def create_standalone_page(
                 log(f"extension add failed: {e}")
             break
 
+    global _VIRTUAL_DISPLAY
+    if not headless and os.name != "nt" and not os.environ.get("DISPLAY"):
+        try:
+            from pyvirtualdisplay import Display
+
+            _VIRTUAL_DISPLAY = Display(visible=0, size=(1280, 900))
+            _VIRTUAL_DISPLAY.start()
+            log(f"Xvfb display started for CPA browser: {os.environ.get('DISPLAY', '')!r}")
+        except Exception as e:  # noqa: BLE001
+            log(f"Xvfb display start failed: {e}")
+
     if headless:
         try:
             opts.headless(True)
@@ -119,41 +152,58 @@ def create_standalone_page(
             pass
         log(f"headed browser DISPLAY={os.environ.get('DISPLAY', '')!r}")
 
-    for cand in (
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-    ):
-        if os.path.isfile(cand):
-            try:
-                opts.set_browser_path(cand)
-            except Exception:
-                pass
-            break
+    if not browser_path_applied_by_options:
+        for cand in (
+            "/usr/bin/chromium-browser",
+            "/usr/bin/chromium",
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+        ):
+            if os.path.isfile(cand):
+                try:
+                    opts.set_browser_path(cand)
+                except Exception:
+                    pass
+                break
 
     from .proxyutil import proxy_for_chromium, proxy_log_label, resolve_proxy
 
     # explicit / runtime config first; env only as fallback
     proxy = resolve_proxy(proxy)
     chrome_proxy = proxy_for_chromium(proxy)
-    if chrome_proxy:
+    if chrome_proxy and not proxy_applied_by_options:
         opts.set_argument(f"--proxy-server={chrome_proxy}")
         log(f"browser proxy={proxy_log_label(proxy)} (chromium {chrome_proxy})")
+    elif chrome_proxy:
+        log(f"browser proxy={proxy_log_label(proxy)} (register-style)")
     else:
         log("browser proxy=(none)")
 
+    profile_dir = tempfile.mkdtemp(prefix="chrome_run_")
+    try:
+        opts.set_user_data_path(profile_dir)
+        log(f"browser user_data_path={profile_dir}")
+    except Exception as e:  # noqa: BLE001
+        log(f"set user_data_path failed: {e}")
+
     browser = Chromium(opts)
+    try:
+        setattr(browser, "_grok_register_profile_dir", profile_dir)
+    except Exception:
+        pass
     page = browser.latest_tab
     log("standalone chromium started")
     return browser, page
 
 
 def close_standalone(browser: Any) -> None:
+    profile_dir = str(getattr(browser, "_grok_register_profile_dir", "") or "")
     try:
         browser.quit()
     except Exception:
         pass
+    if profile_dir and os.path.isdir(profile_dir):
+        shutil.rmtree(profile_dir, ignore_errors=True)
 
 
 # ── mint browser reuse (per-thread) ──
@@ -795,6 +845,7 @@ def mint_with_browser(
     cookies: Any | None = None,
     reuse_browser: bool = True,
     recycle_every: int = 15,
+    max_pending_attempts: int | None = None,
 ) -> dict[str, Any]:
     """Request device code, approve in browser, poll tokens.
 
@@ -843,6 +894,10 @@ def mint_with_browser(
                 # non-reuse path: track for finally close
                 pass
 
+        pending_limit = max_pending_attempts
+        if pending_limit is None:
+            pending_limit = max(1, int(browser_timeout_sec // max(sess.interval, 5)) + 1)
+
         # Cookie inject before opening device URL (skip secondary login when possible)
         if cookies:
             n = inject_cookies(work_page, cookies, log=log)
@@ -861,16 +916,20 @@ def mint_with_browser(
         token_box: dict[str, Any] = {}
         err_box: dict[str, BaseException] = {}
 
+        def _cancelled() -> bool:
+            return stop_event.is_set() or (cancel() if cancel else False)
+
         def _poll() -> None:
             try:
                 time.sleep(2)
                 tr = poll_device_token(
                     sess.device_code,
                     interval=max(sess.interval, 5),
-                    expires_in=min(sess.expires_in, int(browser_timeout_sec) + 60),
+                    expires_in=min(sess.expires_in, int(browser_timeout_sec) + 5),
                     log=log,
-                    cancel=cancel,
+                    cancel=_cancelled,
                     proxy=resolved or None,
+                    max_pending_attempts=pending_limit,
                 )
                 token_box["token"] = tr
                 stop_event.set()
@@ -895,7 +954,9 @@ def mint_with_browser(
         except BrowserConfirmError as e:
             log(f"browser confirm warning: {e}")
 
-        t.join(timeout=max(browser_timeout_sec, 60) + 30)
+        if "token" not in token_box and "err" not in err_box:
+            stop_event.set()
+        t.join(timeout=15)
         if "token" in token_box:
             tr = token_box["token"]
             success = True
@@ -909,7 +970,7 @@ def mint_with_browser(
             }
         if "err" in err_box:
             raise err_box["err"]
-        raise OAuthDeviceError("token poll thread ended without result")
+        raise OAuthDeviceError("device auth timed out without token")
     finally:
         if own_browser is not None:
             if owned:

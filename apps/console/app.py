@@ -584,7 +584,7 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
         "cpa_headless": defaults.get("cpa_headless", False) if payload.cpa_headless is None else payload.cpa_headless,
         "cpa_mint_timeout_sec": defaults.get("cpa_mint_timeout_sec", 300) if payload.cpa_mint_timeout_sec is None else payload.cpa_mint_timeout_sec,
         "cpa_base_url": "https://cli-chat-proxy.grok.com/v1",
-        "cpa_force_standalone": True,
+        "cpa_force_standalone": False,
         "cpa_probe_after_write": True,
         "cpa_probe_chat": False,
         "cpa_mint_cookie_inject": True,
@@ -668,15 +668,17 @@ def sync_account_records_for_task(row: sqlite3.Row) -> None:
                 "uploaded",
             }
             if can_update:
+                uploaded_at = now_iso() if cpa_status == "uploaded" else str(existing["cpa_uploaded_at"] or "") if existing else ""
                 execute_no_return(
                     """
                     UPDATE accounts
-                    SET cpa_status = ?, cpa_path = ?, cpa_error = ?, cpa_updated_at = ?
+                    SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = ?, cpa_updated_at = ?
                     WHERE task_id = ? AND email = ? AND sso = ?
                     """,
                     (
                         cpa_status,
                         str(cpa_record.get("path") or ""),
+                        uploaded_at,
                         cpa_error,
                         now_iso(),
                         int(row["id"]),
@@ -796,6 +798,23 @@ def run_account_cpa_export(account_id: int) -> None:
             config=account_cpa_config,
             log_callback=lambda message: print(f"[account-cpa:{account_id}] {message}", flush=True),
         )
+        if result.get("skipped"):
+            execute_no_return(
+                """
+                UPDATE accounts
+                SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = ?, cpa_updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    "not_started",
+                    str(result.get("cpa_path") or result.get("path") or ""),
+                    "",
+                    str(result.get("reason") or "skipped"),
+                    now_iso(),
+                    account_id,
+                ),
+            )
+            return
         if not result.get("ok"):
             raise RuntimeError(str(result.get("error") or result.get("reason") or "CPA 授权失败"))
 

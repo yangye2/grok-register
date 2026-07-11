@@ -179,8 +179,8 @@ def export_cpa_xai_for_account(
     if cpa_dir and not cpa_dir.is_absolute():
         cpa_dir = (_REG_DIR / cpa_dir).resolve()
 
-    # Priority: cpa_proxy > proxy > env. Config must beat shell https_proxy.
-    proxy = (cfg.get("cpa_proxy") or cfg.get("proxy") or "").strip()
+    # Priority: cpa_proxy > browser_proxy > proxy > env. Match register browser routing.
+    proxy = (cfg.get("cpa_proxy") or cfg.get("browser_proxy") or cfg.get("proxy") or "").strip()
     if not proxy:
         proxy = (
             os.environ.get("https_proxy")
@@ -188,13 +188,23 @@ def export_cpa_xai_for_account(
             or os.environ.get("http_proxy")
             or ""
         ).strip()
-    # Default headed: headless is frequently Cloudflare-blocked on accounts.x.ai
-    headless = bool(cfg.get("cpa_headless", False))
+    # Default headed: headless is frequently Cloudflare-blocked on accounts.x.ai.
+    # Allow overriding only for environments that explicitly accept this risk.
+    requested_headless = bool(cfg.get("cpa_headless", False))
+    allow_headless = str(
+        cfg.get("cpa_allow_headless")
+        or os.environ.get("CPA_ALLOW_HEADLESS")
+        or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    headless = requested_headless and allow_headless
+    if requested_headless and not allow_headless:
+        log("[cpa] headless requested but disabled; use CPA_ALLOW_HEADLESS=1 to force it")
     probe = bool(cfg.get("cpa_probe_after_write", True))
     probe_chat = bool(cfg.get("cpa_probe_chat", False))
     timeout = float(cfg.get("cpa_mint_timeout_sec", 240))
     base_url = cfg.get("cpa_base_url") or "https://cli-chat-proxy.grok.com/v1"
-    force_standalone = bool(cfg.get("cpa_force_standalone", True))
+    force_standalone_raw = cfg.get("cpa_force_standalone")
+    force_standalone = bool(force_standalone_raw) if force_standalone_raw is not None else page is None
     cookie_inject = bool(cfg.get("cpa_mint_cookie_inject", True))
     reuse_browser = bool(cfg.get("cpa_mint_browser_reuse", True))
     recycle_every = int(cfg.get("cpa_mint_browser_recycle_every", 15) or 0)

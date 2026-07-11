@@ -150,11 +150,22 @@ def poll_device_token(
     log: LogFn | None = None,
     cancel: Callable[[], bool] | None = None,
     proxy: str | None = None,
+    max_pending_attempts: int | None = None,
 ) -> TokenResult:
     """Poll token endpoint until authorized or expired."""
     log = log or _noop_log
     deadline = time.time() + max(expires_in - 5, 30)
     sleep_for = max(interval, 1)
+    pending_count = 0
+
+    def _sleep_with_cancel(duration: float) -> None:
+        end_at = time.time() + max(duration, 0)
+        while time.time() < end_at:
+            if cancel and cancel():
+                raise OAuthDeviceError("cancelled")
+            remaining = end_at - time.time()
+            time.sleep(min(0.5, max(remaining, 0.0)))
+
     while time.time() < deadline:
         if cancel and cancel():
             raise OAuthDeviceError("cancelled")
@@ -187,15 +198,23 @@ def poll_device_token(
             err = str(body.get("error") or "")
             desc = str(body.get("error_description") or "")
         if err in ("authorization_pending", "slow_down"):
+            pending_count += 1
+            if max_pending_attempts is not None and pending_count >= max_pending_attempts:
+                raise OAuthDeviceError(
+                    f"device auth timed out after {pending_count} pending polls"
+                )
             if err == "slow_down":
                 sleep_for = min(sleep_for + 5, 30)
-            log(f"oauth poll: {err} (sleep {sleep_for}s)")
-            time.sleep(sleep_for)
+            log(
+                f"oauth poll: {err} (sleep {sleep_for}s, pending={pending_count}"
+                f"{'/' + str(max_pending_attempts) if max_pending_attempts else ''})"
+            )
+            _sleep_with_cancel(sleep_for)
             continue
         if err in ("expired_token", "access_denied"):
             raise OAuthDeviceError(f"device auth failed: {err}: {desc}")
         if status == 400 and err:
             raise OAuthDeviceError(f"device auth token error: {err}: {desc or body}")
         log(f"oauth poll unexpected HTTP {status}: {body!r}")
-        time.sleep(sleep_for)
+        _sleep_with_cancel(sleep_for)
     raise OAuthDeviceError("device auth timed out waiting for user approval")

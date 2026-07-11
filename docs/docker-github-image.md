@@ -76,6 +76,12 @@ CPA_CLOUD_API_BASE=https://your-cpa-host
 CPA_CLOUD_MANAGEMENT_KEY=your-management-key
 ```
 
+xAI 授权默认禁止无头模式，Docker 内会用 Xvfb 跑有头 Chromium。只有明确接受 Cloudflare 拦截风险时才设置：
+
+```env
+CPA_ALLOW_HEADLESS=true
+```
+
 如果控制台部署在远程服务器，并且你需要从其他机器访问，把端口绑定改为：
 
 ```env

@@ -214,7 +214,7 @@
     }
 
     taskListEl.innerHTML = state.tasks.map((task) => `
-      <button class="task-card ${task.id === state.selectedTaskId ? "selected" : ""}" data-task-id="${task.id}">
+      <div class="task-card ${task.id === state.selectedTaskId ? "selected" : ""}" data-task-id="${task.id}" role="button" tabindex="0">
         <div class="task-row">
           <strong title="${escapeHtml(task.name)}">#${task.id} ${escapeHtml(task.name)}</strong>
           <span class="${statusClass(task.status)}">${escapeHtml(task.status)}</span>
@@ -236,14 +236,27 @@
           <span class="task-action-hint">点击查看日志</span>
           <button class="button button-danger button-small" type="button" data-delete-task-id="${task.id}">删除</button>
         </div>
-      </button>
+      </div>
     `).join("");
 
-    taskListEl.querySelectorAll("[data-task-id]").forEach((button) => {
-      button.addEventListener("click", () => {
-        state.selectedTaskId = Number(button.dataset.taskId);
+    taskListEl.querySelectorAll("[data-task-id]").forEach((card) => {
+      const selectTask = () => {
+        state.selectedTaskId = Number(card.dataset.taskId);
         renderTaskList();
         refreshDetail();
+      };
+      card.addEventListener("click", (event) => {
+        if (event.target.closest("[data-delete-task-id]")) {
+          return;
+        }
+        selectTask();
+      });
+      card.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") {
+          return;
+        }
+        event.preventDefault();
+        selectTask();
       });
     });
 

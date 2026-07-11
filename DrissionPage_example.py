@@ -1122,6 +1122,38 @@ def append_account_to_jsonl(account_record: dict, output_path=DEFAULT_ACCOUNT_FI
     print(f"[*] 已写入账号记录到文件: {output_path}")
 
 
+def update_account_cpa_in_jsonl(email: str, sso_value: str, cpa_record: dict, output_path=DEFAULT_ACCOUNT_FILE):
+    if not output_path or not os.path.isfile(output_path):
+        return
+
+    updated_lines = []
+    changed = False
+    with open(output_path, "r", encoding="utf-8") as file:
+        for line in file:
+            raw = line.rstrip("\n")
+            if not raw.strip():
+                continue
+            try:
+                record = json.loads(raw)
+            except json.JSONDecodeError:
+                updated_lines.append(raw)
+                continue
+            if (
+                isinstance(record, dict)
+                and str(record.get("email") or "").strip() == email
+                and str(record.get("sso") or "").strip() == sso_value
+            ):
+                record["cpa"] = cpa_record
+                raw = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+                changed = True
+            updated_lines.append(raw)
+
+    if changed:
+        with open(output_path, "w", encoding="utf-8") as file:
+            file.write("\n".join(updated_lines) + "\n")
+        print(f"[*] 已更新账号 CPA 状态: {output_path}")
+
+
 def build_account_record(email: str, sso_value: str, profile: dict) -> dict:
     return {
         "email": email,
@@ -1134,7 +1166,7 @@ def build_account_record(email: str, sso_value: str, profile: dict) -> dict:
 
 
 def run_single_registration(output_path=DEFAULT_SSO_FILE, account_output_path=DEFAULT_ACCOUNT_FILE, extract_numbers=False):
-    # 单轮流程：打开注册页 -> 完成注册 -> 获取 sso -> 写本地结果。
+    # 单轮流程：打开注册页 -> 完成注册 -> 获取 sso -> 先写本地结果 -> 再做 CPA 授权。
     open_signup_page()
     email, dev_token = fill_email_and_submit()
     fill_code_and_submit(email, dev_token)
@@ -1142,16 +1174,38 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, account_output_path=DE
     sso_value = wait_for_sso_cookie()
     append_sso_to_txt(sso_value, output_path)
     account_record = build_account_record(email, sso_value, profile)
-    cpa_result = export_cpa_auth(email, profile.get("password", ""), sso_value)
     account_record["cpa"] = {
+        "ok": False,
+        "queued": True,
+        "skipped": False,
+        "reason": "",
+        "path": "",
+        "error": "",
+        "cloud_uploaded": False,
+    }
+    append_account_to_jsonl(account_record, account_output_path)
+
+    if run_logger:
+        run_logger.info(
+            "注册成功 | email=%s | password=%s | given=%s | family=%s",
+            email,
+            profile.get("password", ""),
+            profile.get("given_name", ""),
+            profile.get("family_name", ""),
+        )
+
+    cpa_result = export_cpa_auth(email, profile.get("password", ""), sso_value)
+    cpa_record = {
         "ok": bool(cpa_result.get("ok")),
+        "queued": False,
         "skipped": bool(cpa_result.get("skipped")),
         "reason": cpa_result.get("reason") or "",
         "path": cpa_result.get("cpa_path") or cpa_result.get("path") or "",
         "error": cpa_result.get("error") or "",
         "cloud_uploaded": bool((cpa_result.get("cloud_cpa_upload") or {}).get("ok")),
     }
-    append_account_to_jsonl(account_record, account_output_path)
+    account_record["cpa"] = cpa_record
+    update_account_cpa_in_jsonl(email, sso_value, cpa_record, account_output_path)
 
     if extract_numbers:
         extract_visible_numbers()
@@ -1163,15 +1217,6 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, account_output_path=DE
         "cpa": cpa_result,
         **profile,
     }
-
-    if run_logger:
-        run_logger.info(
-            "注册成功 | email=%s | password=%s | given=%s | family=%s",
-            email,
-            profile.get("password", ""),
-            profile.get("given_name", ""),
-            profile.get("family_name", ""),
-        )
 
     print(f"[*] 本轮注册完成，邮箱: {email}")
     return result

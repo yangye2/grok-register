@@ -574,12 +574,14 @@ button {
   flex: 1 1 auto;
   display: grid;
   gap: 8px;
+  align-content: start;
   min-height: 0;
   max-height: none;
   overflow: auto;
 }
 
 .task-card {
+  display: block;
   width: 100%;
   padding: 12px;
   border-radius: 14px;
@@ -587,6 +589,11 @@ button {
   border: 1px solid var(--line);
   text-align: left;
   cursor: pointer;
+}
+
+.task-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .task-card.selected {
