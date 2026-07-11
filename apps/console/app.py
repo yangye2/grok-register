@@ -8,6 +8,7 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -51,8 +52,8 @@ SOURCE_VENV_PYTHON = Path(
 MAX_CONCURRENT_TASKS = max(1, int(os.getenv("GROK_REGISTER_CONSOLE_MAX_CONCURRENT_TASKS", "1")))
 SUPERVISOR_INTERVAL = max(1.0, float(os.getenv("GROK_REGISTER_CONSOLE_POLL_INTERVAL", "2")))
 
-PROJECT_FILES = ("DrissionPage_example.py", "email_register.py")
-PROJECT_DIRS = ("turnstilePatch",)
+PROJECT_FILES = ("DrissionPage_example.py", "email_register.py", "cpa_export.py")
+PROJECT_DIRS = ("turnstilePatch", "cpa_xai")
 
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"
@@ -69,6 +70,8 @@ LINE_RE_TEMP_EMAIL = re.compile(r"临时邮箱创建成功:\s*([^\s]+)")
 LINE_RE_FILLED_EMAIL = re.compile(r"已填写邮箱并点击注册:\s*([^\s]+)")
 
 db_lock = threading.RLock()
+cpa_jobs_lock = threading.Lock()
+cpa_jobs: dict[int, threading.Thread] = {}
 
 
 def now_iso() -> str:
@@ -162,6 +165,16 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_accounts_created_at ON accounts(created_at DESC, id DESC);
             """
         )
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(accounts)").fetchall()}
+        for name, definition in (
+            ("cpa_status", "TEXT NOT NULL DEFAULT 'not_started'"),
+            ("cpa_path", "TEXT"),
+            ("cpa_uploaded_at", "TEXT"),
+            ("cpa_error", "TEXT"),
+            ("cpa_updated_at", "TEXT"),
+        ):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE accounts ADD COLUMN {name} {definition}")
 
 
 def load_source_defaults() -> dict[str, Any]:
@@ -402,6 +415,13 @@ class TaskCreate(BaseModel):
     temp_mail_admin_password: str | None = None
     temp_mail_domain: str | None = None
     temp_mail_site_password: str | None = None
+    cpa_export_enabled: bool | None = None
+    cpa_auth_dir: str | None = None
+    cpa_copy_to_hotload: bool | None = None
+    cpa_hotload_dir: str | None = None
+    cpa_proxy: str | None = None
+    cpa_headless: bool | None = None
+    cpa_mint_timeout_sec: int | None = Field(default=None, ge=60, le=900)
     notes: str = ""
 
 
@@ -412,6 +432,18 @@ class SystemSettings(BaseModel):
     temp_mail_admin_password: str = ""
     temp_mail_domain: str = ""
     temp_mail_site_password: str = ""
+    cpa_export_enabled: bool = True
+    cpa_auth_dir: str = "./cpa_auths"
+    cpa_copy_to_hotload: bool = False
+    cpa_hotload_dir: str = ""
+    cpa_proxy: str = ""
+    cpa_headless: bool = False
+    cpa_mint_timeout_sec: int = Field(default=300, ge=60, le=900)
+    cpa_cloud_upload_enabled: bool = False
+    cpa_cloud_api_base: str = ""
+    cpa_cloud_management_key: str = ""
+    cpa_cloud_upload_timeout: int = Field(default=30, ge=5, le=180)
+    cpa_cloud_upload_retries: int = Field(default=3, ge=1, le=10)
 
 
 @dataclass
@@ -455,6 +487,12 @@ def merged_defaults() -> dict[str, Any]:
     for key in ("temp_mail_api_base", "temp_mail_admin_password", "temp_mail_domain", "temp_mail_site_password"):
         if key in saved:
             base[key] = str(saved.get(key, ""))
+    for key in ("cpa_export_enabled", "cpa_auth_dir", "cpa_copy_to_hotload", "cpa_hotload_dir",
+                "cpa_proxy", "cpa_headless", "cpa_mint_timeout_sec", "cpa_cloud_upload_enabled",
+                "cpa_cloud_api_base", "cpa_cloud_management_key", "cpa_cloud_upload_timeout",
+                "cpa_cloud_upload_retries"):
+        if key in saved:
+            base[key] = saved[key]
     base.pop("api", None)
     return base
 
@@ -469,6 +507,25 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
         "temp_mail_admin_password": defaults.get("temp_mail_admin_password", "") if payload.temp_mail_admin_password is None else payload.temp_mail_admin_password.strip(),
         "temp_mail_domain": defaults.get("temp_mail_domain", "") if payload.temp_mail_domain is None else payload.temp_mail_domain.strip(),
         "temp_mail_site_password": defaults.get("temp_mail_site_password", "") if payload.temp_mail_site_password is None else payload.temp_mail_site_password.strip(),
+        "cpa_export_enabled": defaults.get("cpa_export_enabled", True) if payload.cpa_export_enabled is None else payload.cpa_export_enabled,
+        "cpa_auth_dir": defaults.get("cpa_auth_dir", "./cpa_auths") if payload.cpa_auth_dir is None else payload.cpa_auth_dir.strip(),
+        "cpa_copy_to_hotload": defaults.get("cpa_copy_to_hotload", False) if payload.cpa_copy_to_hotload is None else payload.cpa_copy_to_hotload,
+        "cpa_hotload_dir": defaults.get("cpa_hotload_dir", "") if payload.cpa_hotload_dir is None else payload.cpa_hotload_dir.strip(),
+        "cpa_proxy": defaults.get("cpa_proxy", "") if payload.cpa_proxy is None else payload.cpa_proxy.strip(),
+        "cpa_headless": defaults.get("cpa_headless", False) if payload.cpa_headless is None else payload.cpa_headless,
+        "cpa_mint_timeout_sec": defaults.get("cpa_mint_timeout_sec", 300) if payload.cpa_mint_timeout_sec is None else payload.cpa_mint_timeout_sec,
+        "cpa_base_url": "https://cli-chat-proxy.grok.com/v1",
+        "cpa_force_standalone": True,
+        "cpa_probe_after_write": True,
+        "cpa_probe_chat": False,
+        "cpa_mint_cookie_inject": True,
+        "cpa_mint_browser_reuse": False,
+        "cpa_cloud_upload_enabled": defaults.get("cpa_cloud_upload_enabled", False),
+        "cpa_cloud_api_base": defaults.get("cpa_cloud_api_base", ""),
+        "cpa_cloud_management_key": defaults.get("cpa_cloud_management_key", ""),
+        "cpa_cloud_upload_timeout": defaults.get("cpa_cloud_upload_timeout", 30),
+        "cpa_cloud_upload_retries": defaults.get("cpa_cloud_upload_retries", 3),
+        "sub2api_export_enabled": False,
     }
 
 
@@ -577,7 +634,65 @@ def serialize_account(row: sqlite3.Row) -> dict[str, Any]:
         "source_file": row["source_file"] or "",
         "created_at": row["created_at"],
         "imported_at": row["imported_at"],
+        "cpa_status": row["cpa_status"] or "not_started",
+        "cpa_path": row["cpa_path"] or "",
+        "cpa_uploaded_at": row["cpa_uploaded_at"] or "",
+        "cpa_error": row["cpa_error"] or "",
+        "cpa_updated_at": row["cpa_updated_at"] or "",
     }
+
+
+def run_account_cpa_export(account_id: int) -> None:
+    """Mint and optionally push CPA credentials for one stored account."""
+    try:
+        row = account_row(account_id)
+        email = str(row["email"] or "").strip()
+        password = str(row["password"] or "")
+        sso = str(row["sso"] or "").strip()
+        if not email or not password or not sso:
+            raise ValueError("账号缺少邮箱、密码或 SSO，无法执行 CPA 授权")
+
+        if str(SOURCE_PROJECT) not in sys.path:
+            sys.path.insert(0, str(SOURCE_PROJECT))
+        import cpa_export
+
+        result = cpa_export.export_cpa_xai_for_account(
+            email,
+            password,
+            sso=sso,
+            config=merged_defaults(),
+            log_callback=lambda message: print(f"[account-cpa:{account_id}] {message}", flush=True),
+        )
+        if not result.get("ok"):
+            raise RuntimeError(str(result.get("error") or result.get("reason") or "CPA 授权失败"))
+
+        cloud = result.get("cloud_cpa_upload") or {}
+        if cloud and not cloud.get("ok") and not cloud.get("skipped"):
+            raise RuntimeError(f"CPA 授权已生成，但远程推送失败: {cloud.get('error') or cloud}")
+
+        status = "uploaded" if cloud.get("ok") else "generated"
+        execute_no_return(
+            """
+            UPDATE accounts
+            SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = '', cpa_updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                str(result.get("cpa_path") or result.get("path") or ""),
+                now_iso() if cloud.get("ok") else "",
+                now_iso(),
+                account_id,
+            ),
+        )
+    except Exception as exc:
+        execute_no_return(
+            "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
+            ("failed", str(exc), now_iso(), account_id),
+        )
+    finally:
+        with cpa_jobs_lock:
+            cpa_jobs.pop(account_id, None)
 
 
 def build_accounts_where_clause(task_id: int | None, search: str) -> tuple[str, list[Any]]:
@@ -1040,6 +1155,23 @@ def delete_account(account_id: int) -> dict[str, Any]:
     remove_account_from_source_file(row)
     execute_no_return("DELETE FROM accounts WHERE id = ?", (account_id,))
     return {"ok": True}
+
+
+@app.post("/api/accounts/{account_id}/cpa")
+def authorize_account_cpa(account_id: int) -> dict[str, Any]:
+    account_row(account_id)
+    with cpa_jobs_lock:
+        active = cpa_jobs.get(account_id)
+        if active and active.is_alive():
+            raise HTTPException(status_code=409, detail="CPA 授权任务正在执行")
+        execute_no_return(
+            "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
+            ("running", now_iso(), account_id),
+        )
+        worker = threading.Thread(target=run_account_cpa_export, args=(account_id,), daemon=True)
+        cpa_jobs[account_id] = worker
+        worker.start()
+    return {"ok": True, "status": "running", "account_id": account_id}
 
 
 @app.get("/api/tasks")

@@ -151,6 +151,7 @@
                   <th>SSO</th>
                   <th>任务</th>
                   <th>创建时间</th>
+                  <th>CPA</th>
                   <th>操作</th>
                 </tr>
               </thead>
@@ -210,6 +211,54 @@
             <label>
               <span>站点密码</span>
               <input name="temp_mail_site_password" placeholder="optional">
+            </label>
+            <label>
+              <span>CPA 授权目录</span>
+              <input name="cpa_auth_dir" placeholder="./cpa_auths">
+            </label>
+            <label>
+              <span>xAI 授权专用代理</span>
+              <input name="cpa_proxy" placeholder="仅用于 xAI 授权；留空则使用请求代理">
+            </label>
+            <label>
+              <span>CPA 导入目录</span>
+              <input name="cpa_hotload_dir" placeholder="CPA 的 auth 热加载目录">
+            </label>
+            <label>
+              <span>CPA 授权超时（秒）</span>
+              <input name="cpa_mint_timeout_sec" type="number" min="60" max="900">
+            </label>
+            <label>
+              <span>自动生成 CPA 授权</span>
+              <input name="cpa_export_enabled" type="checkbox">
+            </label>
+            <label>
+              <span>生成后导入 CPA</span>
+              <input name="cpa_copy_to_hotload" type="checkbox">
+            </label>
+            <label>
+              <span>xAI 授权浏览器（无头）</span>
+              <input name="cpa_headless" type="checkbox" aria-label="xAI 授权浏览器无头模式">
+            </label>
+            <label>
+              <span>推送 CPA 授权到远程</span>
+              <input name="cpa_cloud_upload_enabled" type="checkbox">
+            </label>
+            <label>
+              <span>远程 CPA 管理地址</span>
+              <input name="cpa_cloud_api_base" placeholder="https://cpa.example.com">
+            </label>
+            <label>
+              <span>远程 CPA 管理密钥</span>
+              <input name="cpa_cloud_management_key" type="password" autocomplete="off">
+            </label>
+            <label>
+              <span>远程上传超时（秒）</span>
+              <input name="cpa_cloud_upload_timeout" type="number" min="5" max="180">
+            </label>
+            <label>
+              <span>远程上传重试次数</span>
+              <input name="cpa_cloud_upload_retries" type="number" min="1" max="10">
             </label>
             <div class="form-actions full">
               <button class="button" type="submit">保存默认配置</button>

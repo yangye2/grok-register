@@ -14,6 +14,39 @@ import sys
 from email_register import get_email_and_token, get_oai_code
 
 
+def load_cpa_config() -> dict:
+    """Read optional CPA export settings from the current task config."""
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "config.json"), "r", encoding="utf-8") as file:
+            data = json.load(file)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
+    """Create a CPA xAI credential without invalidating a successful registration."""
+    config = load_cpa_config()
+    if not bool(config.get("cpa_export_enabled", False)):
+        return {"ok": False, "skipped": True, "reason": "disabled"}
+    try:
+        import cpa_export
+        result = cpa_export.export_cpa_xai_for_account(
+            email, password, page=page, sso=sso_value, config=config,
+            log_callback=lambda message: print(message, flush=True),
+        )
+    except Exception as exc:
+        print(f"[cpa] export exception: {exc}")
+        return {"ok": False, "error": str(exc)}
+    if result.get("ok"):
+        print(f"[cpa] auth generated: {result.get('cpa_path') or result.get('path')}")
+    elif result.get("skipped"):
+        print(f"[cpa] export skipped: {result.get('reason', 'unknown')}")
+    else:
+        print(f"[cpa] auth generation failed: {result.get('error') or result}")
+    return result
+
+
 def setup_run_logger() -> logging.Logger:
     log_dir = os.path.join(os.path.dirname(__file__), "logs")
     os.makedirs(log_dir, exist_ok=True)
@@ -1108,6 +1141,13 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, account_output_path=DE
     sso_value = wait_for_sso_cookie()
     append_sso_to_txt(sso_value, output_path)
     account_record = build_account_record(email, sso_value, profile)
+    cpa_result = export_cpa_auth(email, profile.get("password", ""), sso_value)
+    account_record["cpa"] = {
+        "ok": bool(cpa_result.get("ok")),
+        "path": cpa_result.get("cpa_path") or cpa_result.get("path") or "",
+        "error": cpa_result.get("error") or "",
+        "cloud_uploaded": bool((cpa_result.get("cloud_cpa_upload") or {}).get("ok")),
+    }
     append_account_to_jsonl(account_record, account_output_path)
 
     if extract_numbers:
@@ -1117,6 +1157,7 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, account_output_path=DE
         "email": email,
         "sso": sso_value,
         "account": account_record,
+        "cpa": cpa_result,
         **profile,
     }
 

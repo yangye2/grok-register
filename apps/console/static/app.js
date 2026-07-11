@@ -78,6 +78,18 @@
     settingsFormEl.elements.temp_mail_admin_password.value = defaults.temp_mail_admin_password || "";
     settingsFormEl.elements.temp_mail_domain.value = defaults.temp_mail_domain || "";
     settingsFormEl.elements.temp_mail_site_password.value = defaults.temp_mail_site_password || "";
+    settingsFormEl.elements.cpa_auth_dir.value = defaults.cpa_auth_dir || "./cpa_auths";
+    settingsFormEl.elements.cpa_proxy.value = defaults.cpa_proxy || "";
+    settingsFormEl.elements.cpa_hotload_dir.value = defaults.cpa_hotload_dir || "";
+    settingsFormEl.elements.cpa_mint_timeout_sec.value = defaults.cpa_mint_timeout_sec || 300;
+    settingsFormEl.elements.cpa_export_enabled.checked = Boolean(defaults.cpa_export_enabled);
+    settingsFormEl.elements.cpa_copy_to_hotload.checked = Boolean(defaults.cpa_copy_to_hotload);
+    settingsFormEl.elements.cpa_headless.checked = Boolean(defaults.cpa_headless);
+    settingsFormEl.elements.cpa_cloud_upload_enabled.checked = Boolean(defaults.cpa_cloud_upload_enabled);
+    settingsFormEl.elements.cpa_cloud_api_base.value = defaults.cpa_cloud_api_base || "";
+    settingsFormEl.elements.cpa_cloud_management_key.value = defaults.cpa_cloud_management_key || "";
+    settingsFormEl.elements.cpa_cloud_upload_timeout.value = defaults.cpa_cloud_upload_timeout || 30;
+    settingsFormEl.elements.cpa_cloud_upload_retries.value = defaults.cpa_cloud_upload_retries || 3;
   }
 
   function statusClass(status) {
@@ -328,6 +340,14 @@
     }
     accountsEmptyEl.classList.add("hidden");
 
+    const cpaStatusLabel = (status) => ({
+      not_started: "未授权",
+      running: "授权中",
+      generated: "已生成",
+      uploaded: "已推送",
+      failed: "失败",
+    }[status] || status || "未授权");
+
     accountsTableBodyEl.innerHTML = state.accounts.map((account) => `
       <tr>
         <td class="select-col">
@@ -338,8 +358,10 @@
         <td class="account-sso" title="${escapeHtml(account.sso || "")}">${escapeHtml(account.sso || "-")}</td>
         <td title="#${account.task_id} ${escapeHtml(account.task_name || "")}">#${account.task_id} ${escapeHtml(account.task_name || "")}</td>
         <td>${escapeHtml(account.created_at || "-")}</td>
+        <td title="${escapeHtml(account.cpa_error || account.cpa_path || "")}">${escapeHtml(cpaStatusLabel(account.cpa_status))}</td>
         <td class="account-actions">
           <button class="button button-small" type="button" data-download-account-id="${account.id}">下载</button>
+          <button class="button button-secondary button-small" type="button" data-cpa-account-id="${account.id}" ${account.cpa_status === "running" ? "disabled" : ""}>授权并推送</button>
           <button class="button button-danger button-small" type="button" data-delete-account-id="${account.id}">删除</button>
         </td>
       </tr>
@@ -375,6 +397,24 @@
         await fetchJson(`/api/accounts/${account.id}`, { method: "DELETE" });
         state.selectedAccountIds.delete(account.id);
         await refreshAccounts();
+      });
+    });
+
+    accountsTableBodyEl.querySelectorAll("[data-cpa-account-id]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const account = state.accounts.find((item) => item.id === Number(button.dataset.cpaAccountId));
+        if (!account) return;
+        const confirmed = window.confirm(`确认对账号 ${account.email} 生成授权并推送 CPA 吗？`);
+        if (!confirmed) return;
+        button.disabled = true;
+        try {
+          await fetchJson(`/api/accounts/${account.id}/cpa`, { method: "POST" });
+          accountsMetaEl.textContent = `账号 ${account.email} 的 CPA 授权任务已开始`;
+          await refreshAccounts();
+        } catch (error) {
+          accountsMetaEl.textContent = `CPA 授权启动失败: ${error.message}`;
+          button.disabled = false;
+        }
       });
     });
   }
@@ -629,6 +669,18 @@
       temp_mail_admin_password: settingsFormEl.elements.temp_mail_admin_password.value.trim(),
       temp_mail_domain: settingsFormEl.elements.temp_mail_domain.value.trim(),
       temp_mail_site_password: settingsFormEl.elements.temp_mail_site_password.value.trim(),
+      cpa_auth_dir: settingsFormEl.elements.cpa_auth_dir.value.trim(),
+      cpa_proxy: settingsFormEl.elements.cpa_proxy.value.trim(),
+      cpa_hotload_dir: settingsFormEl.elements.cpa_hotload_dir.value.trim(),
+      cpa_mint_timeout_sec: Number(settingsFormEl.elements.cpa_mint_timeout_sec.value) || 300,
+      cpa_export_enabled: settingsFormEl.elements.cpa_export_enabled.checked,
+      cpa_copy_to_hotload: settingsFormEl.elements.cpa_copy_to_hotload.checked,
+      cpa_headless: settingsFormEl.elements.cpa_headless.checked,
+      cpa_cloud_upload_enabled: settingsFormEl.elements.cpa_cloud_upload_enabled.checked,
+      cpa_cloud_api_base: settingsFormEl.elements.cpa_cloud_api_base.value.trim(),
+      cpa_cloud_management_key: settingsFormEl.elements.cpa_cloud_management_key.value.trim(),
+      cpa_cloud_upload_timeout: Number(settingsFormEl.elements.cpa_cloud_upload_timeout.value) || 30,
+      cpa_cloud_upload_retries: Number(settingsFormEl.elements.cpa_cloud_upload_retries.value) || 3,
     };
     try {
       const data = await fetchJson("/api/settings", {
