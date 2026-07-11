@@ -6,6 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    chromium \
     xvfb \
     wget \
     gnupg \
@@ -46,7 +47,8 @@ RUN pip install --no-cache-dir \
     && rm -f /tmp/requirements.txt /tmp/console-requirements.txt
 
 COPY config.example.json /workspace/config.example.json
-COPY DrissionPage_example.py email_register.py /workspace/
+COPY apps/register-runner /workspace/apps/register-runner
+COPY apps/cpa-worker /workspace/apps/cpa-worker
 COPY turnstilePatch /workspace/turnstilePatch
 COPY apps/console /workspace/apps/console
 

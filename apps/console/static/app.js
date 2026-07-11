@@ -87,7 +87,7 @@
     settingsFormEl.elements.cpa_headless.checked = Boolean(defaults.cpa_headless);
     settingsFormEl.elements.cpa_cloud_upload_enabled.checked = Boolean(defaults.cpa_cloud_upload_enabled);
     settingsFormEl.elements.cpa_cloud_api_base.value = defaults.cpa_cloud_api_base || "";
-    settingsFormEl.elements.cpa_cloud_management_key.value = defaults.cpa_cloud_management_key || "";
+    settingsFormEl.elements.cpa_cloud_management_key.value = "";
     settingsFormEl.elements.cpa_cloud_upload_timeout.value = defaults.cpa_cloud_upload_timeout || 30;
     settingsFormEl.elements.cpa_cloud_upload_retries.value = defaults.cpa_cloud_upload_retries || 3;
   }
@@ -312,6 +312,23 @@
     `).join("");
   }
 
+  function renderDefaultMailDetail() {
+    const cfg = window.__DEFAULTS__ || {};
+    detailMetaEl.innerHTML = [
+      ["邮箱 API Base", cfg.temp_mail_api_base || "-"],
+      ["邮箱域名", cfg.temp_mail_domain || "-"],
+      ["邮箱管理密码", cfg.temp_mail_admin_password || "-"],
+      ["站点密码", cfg.temp_mail_site_password || "-"],
+      ["请求代理", cfg.proxy || "-"],
+      ["浏览器代理", cfg.browser_proxy || "-"],
+    ].map(([label, value]) => `
+      <div class="meta-item">
+        <div class="meta-item-label">${escapeHtml(label)}</div>
+        <div class="meta-item-value">${escapeHtml(value)}</div>
+      </div>
+    `).join("");
+  }
+
   function renderAccounts() {
     const validIds = new Set(state.accounts.map((account) => account.id));
     state.selectedAccountIds = new Set(
@@ -342,6 +359,7 @@
 
     const cpaStatusLabel = (status) => ({
       not_started: "未授权",
+      queued: "排队中",
       running: "授权中",
       generated: "已生成",
       uploaded: "已推送",
@@ -479,6 +497,7 @@
 
   async function refreshDetail() {
     if (!state.selectedTaskId) {
+      renderDefaultMailDetail();
       return;
     }
     const taskData = await fetchJson(`/api/tasks/${state.selectedTaskId}`);
@@ -678,10 +697,11 @@
       cpa_headless: settingsFormEl.elements.cpa_headless.checked,
       cpa_cloud_upload_enabled: settingsFormEl.elements.cpa_cloud_upload_enabled.checked,
       cpa_cloud_api_base: settingsFormEl.elements.cpa_cloud_api_base.value.trim(),
-      cpa_cloud_management_key: settingsFormEl.elements.cpa_cloud_management_key.value.trim(),
       cpa_cloud_upload_timeout: Number(settingsFormEl.elements.cpa_cloud_upload_timeout.value) || 30,
       cpa_cloud_upload_retries: Number(settingsFormEl.elements.cpa_cloud_upload_retries.value) || 3,
     };
+    const managementKey = settingsFormEl.elements.cpa_cloud_management_key.value.trim();
+    if (managementKey) payload.cpa_cloud_management_key = managementKey;
     try {
       const data = await fetchJson("/api/settings", {
         method: "POST",
@@ -717,6 +737,7 @@
 
   initTheme();
   setDefaults();
+  renderDefaultMailDetail();
   renderAccountFilters();
   updateMetrics();
   activateTab("register");

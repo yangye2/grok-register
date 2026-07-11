@@ -48,7 +48,8 @@ body {
     radial-gradient(circle at top left, rgba(79, 70, 229, 0.16), transparent 30%),
     linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
   color: var(--ink);
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 button,
@@ -62,11 +63,11 @@ button {
 }
 
 .shell {
-  height: 100vh;
+  height: auto;
   min-height: 100vh;
   display: grid;
   grid-template-columns: 250px minmax(0, 1fr);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .sidebar {
@@ -188,13 +189,13 @@ button {
 }
 
 .content {
-  height: 100vh;
-  min-height: 0;
+  height: auto;
+  min-height: 100vh;
   padding: 16px;
   display: grid;
   gap: 16px;
-  grid-template-rows: auto auto minmax(0, 1fr);
-  overflow: hidden;
+  grid-template-rows: auto auto auto;
+  overflow: visible;
 }
 
 .metric-grid {

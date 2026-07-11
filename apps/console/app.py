@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import math
 import os
 import re
@@ -52,6 +53,8 @@ SOURCE_VENV_PYTHON = Path(
 MAX_CONCURRENT_TASKS = max(1, int(os.getenv("GROK_REGISTER_CONSOLE_MAX_CONCURRENT_TASKS", "1")))
 SUPERVISOR_INTERVAL = max(1.0, float(os.getenv("GROK_REGISTER_CONSOLE_POLL_INTERVAL", "2")))
 
+REGISTER_RUNNER_DIR = SOURCE_PROJECT / "apps" / "register-runner"
+CPA_WORKER_DIR = SOURCE_PROJECT / "apps" / "cpa-worker"
 PROJECT_FILES = ("DrissionPage_example.py", "email_register.py", "cpa_export.py")
 PROJECT_DIRS = ("turnstilePatch", "cpa_xai")
 
@@ -441,7 +444,7 @@ class SystemSettings(BaseModel):
     cpa_mint_timeout_sec: int = Field(default=300, ge=60, le=900)
     cpa_cloud_upload_enabled: bool = False
     cpa_cloud_api_base: str = ""
-    cpa_cloud_management_key: str = ""
+    cpa_cloud_management_key: str | None = None
     cpa_cloud_upload_timeout: int = Field(default=30, ge=5, le=180)
     cpa_cloud_upload_retries: int = Field(default=3, ge=1, le=10)
 
@@ -466,6 +469,8 @@ def read_settings() -> dict[str, Any]:
 
 def write_settings(settings: SystemSettings) -> dict[str, Any]:
     data = settings.model_dump()
+    if data["cpa_cloud_management_key"] is None:
+        data["cpa_cloud_management_key"] = str(read_settings().get("cpa_cloud_management_key") or "")
     execute(
         """
         INSERT INTO settings (key, value, updated_at)
@@ -475,6 +480,12 @@ def write_settings(settings: SystemSettings) -> dict[str, Any]:
         ("system", json.dumps(data, ensure_ascii=False), now_iso()),
     )
     return data
+
+
+def public_defaults() -> dict[str, Any]:
+    defaults = merged_defaults()
+    defaults.pop("cpa_cloud_management_key", None)
+    return defaults
 
 
 def merged_defaults() -> dict[str, Any]:
@@ -522,7 +533,6 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
         "cpa_mint_browser_reuse": False,
         "cpa_cloud_upload_enabled": defaults.get("cpa_cloud_upload_enabled", False),
         "cpa_cloud_api_base": defaults.get("cpa_cloud_api_base", ""),
-        "cpa_cloud_management_key": defaults.get("cpa_cloud_management_key", ""),
         "cpa_cloud_upload_timeout": defaults.get("cpa_cloud_upload_timeout", 30),
         "cpa_cloud_upload_retries": defaults.get("cpa_cloud_upload_retries", 3),
         "sub2api_export_enabled": False,
@@ -654,37 +664,53 @@ def run_account_cpa_export(account_id: int) -> None:
 
         if str(SOURCE_PROJECT) not in sys.path:
             sys.path.insert(0, str(SOURCE_PROJECT))
-        import cpa_export
+        module_path = CPA_WORKER_DIR / "cpa_export.py"
+        if not module_path.is_file():
+            raise FileNotFoundError(f"CPA module not found: {module_path}")
+        spec = importlib.util.spec_from_file_location("console_cpa_export", module_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Unable to load CPA module: {module_path}")
+        cpa_export = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cpa_export)
 
         result = cpa_export.export_cpa_xai_for_account(
             email,
             password,
             sso=sso,
-            config=merged_defaults(),
+            config={**merged_defaults(), "cpa_auth_dir": str(SOURCE_PROJECT / "cpa_auths")},
             log_callback=lambda message: print(f"[account-cpa:{account_id}] {message}", flush=True),
         )
         if not result.get("ok"):
             raise RuntimeError(str(result.get("error") or result.get("reason") or "CPA 授权失败"))
 
         cloud = result.get("cloud_cpa_upload") or {}
-        if cloud and not cloud.get("ok") and not cloud.get("skipped"):
-            raise RuntimeError(f"CPA 授权已生成，但远程推送失败: {cloud.get('error') or cloud}")
-
         status = "uploaded" if cloud.get("ok") else "generated"
+        cloud_error = "" if cloud.get("ok") or cloud.get("skipped") else f"远程推送失败: {cloud.get('error') or cloud}"
         execute_no_return(
             """
             UPDATE accounts
-            SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = '', cpa_updated_at = ?
+            SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = ?, cpa_updated_at = ?
             WHERE id = ?
             """,
             (
                 status,
                 str(result.get("cpa_path") or result.get("path") or ""),
                 now_iso() if cloud.get("ok") else "",
+                cloud_error,
                 now_iso(),
                 account_id,
             ),
         )
+        cpa = record.get("cpa") if isinstance(record.get("cpa"), dict) else {}
+        if cpa:
+            status = "uploaded" if cpa.get("cloud_uploaded") else "generated" if cpa.get("ok") else "queued" if cpa.get("queued") else "failed"
+            execute_no_return(
+                """
+                UPDATE accounts SET cpa_status = ?, cpa_path = ?, cpa_error = ?, cpa_updated_at = ?
+                WHERE task_id = ? AND email = ? AND sso = ?
+                """,
+                (status, str(cpa.get("path") or ""), str(cpa.get("error") or ""), now_iso(), int(row["id"]), email, sso),
+            )
     except Exception as exc:
         execute_no_return(
             "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
@@ -866,9 +892,10 @@ def delete_task_files(row: sqlite3.Row) -> None:
 def copy_source_to_task_dir(task_dir: Path, task_config: dict[str, Any]) -> None:
     task_dir.mkdir(parents=True, exist_ok=True)
     for file_name in PROJECT_FILES:
-        shutil.copy2(SOURCE_PROJECT / file_name, task_dir / file_name)
+        source_dir = CPA_WORKER_DIR if file_name == "cpa_export.py" else REGISTER_RUNNER_DIR
+        shutil.copy2(source_dir / file_name, task_dir / file_name)
     for dir_name in PROJECT_DIRS:
-        src = SOURCE_PROJECT / dir_name
+        src = CPA_WORKER_DIR / dir_name if dir_name == "cpa_xai" else SOURCE_PROJECT / dir_name
         dst = task_dir / dir_name
         if dst.exists():
             shutil.rmtree(dst)
@@ -948,7 +975,18 @@ class TaskSupervisor:
             (STATUS_QUEUED, slots),
         )
         for row in queued:
-            self._start_task(row)
+            try:
+                self._start_task(row)
+            except Exception as exc:
+                task_id = int(row["id"])
+                message = f"Task startup failed: {exc}"
+                Path(row["console_path"]).parent.mkdir(parents=True, exist_ok=True)
+                with Path(row["console_path"]).open("a", encoding="utf-8") as log_file:
+                    log_file.write(f"[{now_iso()}] {message}\n")
+                execute_no_return(
+                    "UPDATE tasks SET status = ?, finished_at = ?, last_error = ?, current_phase = ? WHERE id = ?",
+                    (STATUS_FAILED, now_iso(), message, "startup_failed", task_id),
+                )
 
     def _start_task(self, row: sqlite3.Row) -> None:
         task_id = int(row["id"])
@@ -956,11 +994,19 @@ class TaskSupervisor:
         console_path = Path(row["console_path"])
         task_config = json.loads(row["config_json"])
         copy_source_to_task_dir(task_dir, task_config)
+        child_env = os.environ.copy()
+        management_key = str(read_settings().get("cpa_cloud_management_key") or "").strip()
+        if management_key:
+            child_env["CPA_CLOUD_MANAGEMENT_KEY"] = management_key
 
         output_path = task_dir / "sso" / f"task_{task_id}.txt"
         account_output_path = task_dir / "accounts" / f"task_{task_id}.jsonl"
+        configured_python = str(SOURCE_VENV_PYTHON)
+        source_python = configured_python
+        if not SOURCE_VENV_PYTHON.is_file() and not shutil.which(configured_python):
+            source_python = sys.executable
         command = [
-            str(SOURCE_VENV_PYTHON),
+            source_python,
             str(task_dir / "DrissionPage_example.py"),
             "--count",
             str(int(row["target_count"])),
@@ -977,6 +1023,7 @@ class TaskSupervisor:
             stderr=subprocess.STDOUT,
             start_new_session=True,
             text=True,
+            env=child_env,
         )
         self._processes[task_id] = ManagedProcess(task_id=task_id, process=process, log_handle=log_handle)
         execute_no_return(
@@ -1058,6 +1105,10 @@ supervisor = TaskSupervisor()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    execute_no_return(
+        "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE cpa_status = ?",
+        ("failed", "Console restarted while CPA authorization was running; retry the operation.", now_iso(), "running"),
+    )
     sync_all_account_records()
     supervisor.start()
     try:
@@ -1077,7 +1128,7 @@ def index(request: Request) -> HTMLResponse:
         "index.html",
         {
             "request": request,
-            "defaults": json.dumps(merged_defaults(), ensure_ascii=False),
+            "defaults": json.dumps(public_defaults(), ensure_ascii=False),
             "max_concurrent_tasks": MAX_CONCURRENT_TASKS,
             "source_project": str(SOURCE_PROJECT),
         },
@@ -1087,8 +1138,8 @@ def index(request: Request) -> HTMLResponse:
 @app.get("/api/meta")
 def api_meta() -> dict[str, Any]:
     return {
-        "defaults": merged_defaults(),
-        "settings": read_settings(),
+        "defaults": public_defaults(),
+        "settings": {key: value for key, value in read_settings().items() if key != "cpa_cloud_management_key"},
         "source_project": str(SOURCE_PROJECT),
         "python_path": str(SOURCE_VENV_PYTHON),
         "max_concurrent_tasks": MAX_CONCURRENT_TASKS,
@@ -1102,13 +1153,13 @@ def api_health() -> dict[str, Any]:
 
 @app.get("/api/settings")
 def get_settings() -> dict[str, Any]:
-    return {"settings": read_settings(), "defaults": merged_defaults()}
+    return {"settings": {key: value for key, value in read_settings().items() if key != "cpa_cloud_management_key"}, "defaults": public_defaults()}
 
 
 @app.post("/api/settings")
 def save_settings(payload: SystemSettings) -> dict[str, Any]:
     saved = write_settings(payload)
-    return {"settings": saved, "defaults": merged_defaults()}
+    return {"settings": {key: value for key, value in saved.items() if key != "cpa_cloud_management_key"}, "defaults": public_defaults()}
 
 
 @app.get("/api/accounts")
@@ -1118,7 +1169,7 @@ def list_accounts(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
 ) -> dict[str, Any]:
-    sync_active_account_records()
+    sync_all_account_records()
     where_clause, where_params = build_accounts_where_clause(task_id, search)
     count_row = fetch_one(
         f"SELECT COUNT(*) AS c FROM accounts{where_clause}",

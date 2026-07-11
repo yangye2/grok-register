@@ -17,7 +17,10 @@ services:
       - warp
 
   console:
-    image: ghcr.io/yangye2/grok-register:latest
+    build:
+      context: .
+      dockerfile: apps/worker-runtime/Dockerfile
+    image: grok-register:local
     working_dir: /workspace
     command: python /workspace/apps/console/app.py
     environment:
@@ -29,10 +32,13 @@ services:
       GROK_REGISTER_DEFAULT_RUN_COUNT: ${GROK_REGISTER_DEFAULT_RUN_COUNT:-50}
       GROK_REGISTER_DEFAULT_PROXY: ${GROK_REGISTER_DEFAULT_PROXY:-socks5://warp:1080}
       GROK_REGISTER_DEFAULT_BROWSER_PROXY: ${GROK_REGISTER_DEFAULT_BROWSER_PROXY:-socks5://warp:1080}
+      CPA_CLOUD_API_BASE: ${CPA_CLOUD_API_BASE:-}
+      CPA_CLOUD_MANAGEMENT_KEY: ${CPA_CLOUD_MANAGEMENT_KEY:-}
     ports:
-      - "${GROK_STACK_CONSOLE_PORT:-18600}:18600"
+      - "127.0.0.1:${GROK_STACK_CONSOLE_PORT:-18600}:18600"
     volumes:
       - ./runtime/console:/workspace/apps/console/runtime
+      - ./runtime/cpa_auths:/workspace/cpa_auths
     restart: unless-stopped
     depends_on:
       - warp
