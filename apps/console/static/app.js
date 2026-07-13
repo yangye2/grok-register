@@ -1,7 +1,10 @@
 (function () {
+  const ACTIVE_TASK_STATUSES = new Set(["queued", "running", "stopping"]);
+
   const state = {
     tasks: [],
     selectedTaskId: null,
+    logsLoadedTaskId: null,
     accounts: [],
     selectedAccountIds: new Set(),
     accountSearch: "",
@@ -331,6 +334,7 @@
     taskListEl.querySelectorAll("[data-task-id]").forEach((card) => {
       const selectTask = () => {
         state.selectedTaskId = Number(card.dataset.taskId);
+        state.logsLoadedTaskId = null;
         renderTaskList();
         refreshDetail();
       };
@@ -362,6 +366,7 @@
             detailTitleEl.textContent = "实时控制台";
             detailSummaryEl.innerHTML = "";
             detailMetaEl.innerHTML = "";
+            state.logsLoadedTaskId = null;
             consoleOutputEl.textContent = "选择任务后显示输出";
           }
           await refreshTasks();
@@ -785,22 +790,54 @@
     }
   }
 
-  async function refreshDetail() {
-    if (!state.selectedTaskId) {
-      renderDefaultMailDetail();
-      return;
-    }
-    const taskData = await fetchJson(`/api/tasks/${state.selectedTaskId}`);
-    renderTaskDetail(taskData.task);
-    const logData = await fetchJson(`/api/tasks/${state.selectedTaskId}/logs?limit=250`);
+  async function loadTaskLogs(taskId) {
+    const logData = await fetchJson(`/api/tasks/${taskId}/logs?limit=250`);
     consoleOutputEl.innerHTML = escapeHtml((logData.lines || []).join("\n"));
     consoleOutputEl.scrollTop = consoleOutputEl.scrollHeight;
+    state.logsLoadedTaskId = taskId;
   }
 
-  async function refreshAll() {
+  async function refreshDetail(options = {}) {
+    const forceLogs = options.forceLogs === true;
+    if (!state.selectedTaskId) {
+      renderDefaultMailDetail();
+      return null;
+    }
+    const taskData = await fetchJson(`/api/tasks/${state.selectedTaskId}`);
+    const task = taskData.task;
+    renderTaskDetail(task);
+    const needLogs = (
+      forceLogs
+      || ACTIVE_TASK_STATUSES.has(task.status)
+      || state.logsLoadedTaskId !== task.id
+    );
+    if (needLogs) {
+      await loadTaskLogs(task.id);
+    }
+    return task;
+  }
+
+  async function refreshAll(options = {}) {
+    const force = options.force === true;
     try {
       await refreshTasks();
-      await refreshDetail();
+      if (!state.selectedTaskId) {
+        state.logsLoadedTaskId = null;
+        renderDefaultMailDetail();
+        return;
+      }
+      const listed = (state.tasks || []).find((t) => t.id === state.selectedTaskId);
+      const isActive = listed ? ACTIVE_TASK_STATUSES.has(listed.status) : true;
+      const logsMissing = state.logsLoadedTaskId !== state.selectedTaskId;
+      if (force || isActive || logsMissing) {
+        // 运行中 / 手动刷新 / 首次点选：拉详情 + 日志
+        await refreshDetail({ forceLogs: true });
+      } else if (listed) {
+        // 非运行且已加载过日志：只刷新摘要，停止轮询日志接口
+        renderTaskDetail(listed);
+      } else {
+        await refreshDetail({ forceLogs: true });
+      }
     } catch (error) {
       formMessageEl.textContent = error.message;
       formMessageEl.className = "form-message error";
@@ -891,7 +928,7 @@
     }
   });
 
-  refreshBtnEl.addEventListener("click", refreshAll);
+  refreshBtnEl.addEventListener("click", () => refreshAll({ force: true }));
   healthRefreshBtnEl.addEventListener("click", refreshHealth);
   accountsRefreshBtnEl.addEventListener("click", refreshAccounts);
   if (accountCpaLogCloseBtnEl) {

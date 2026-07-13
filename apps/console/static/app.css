@@ -699,7 +699,7 @@ button {
   overscroll-behavior: contain;
   padding: 10px;
   color: #e2e8f0;
-  font: 10px/1.5 "SFMono-Regular", "IBM Plex Mono", monospace;
+  font: 13px/1.55 "SFMono-Regular", "IBM Plex Mono", monospace;
 }
 
 .panel-workbench {
