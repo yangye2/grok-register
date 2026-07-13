@@ -201,14 +201,38 @@
   }
 
 
+  async function fetchAllTasksForUi() {
+    // 后端 page_size 上限 200，用分页拉全量（筛选下拉用）
+    const pageSize = 200;
+    let page = 1;
+    let totalPages = 1;
+    const tasks = [];
+    while (page <= totalPages) {
+      const data = await fetchJson(`/api/tasks?page=${page}&page_size=${pageSize}`);
+      tasks.push(...(data.tasks || []));
+      totalPages = Number(data.pagination?.total_pages || 1);
+      page += 1;
+      if (page > 50) break; // 安全上限
+    }
+    return tasks;
+  }
+
   async function updateMetrics() {
     try {
-      const allTasksData = await fetchJson("/api/tasks?page_size=1000");
-      const allTasks = allTasksData.tasks || [];
-      const runningStatuses = new Set(["queued", "running", "stopping"]);
-      metricTaskTotalEl.textContent = String(allTasks.length);
-      metricTaskRunningEl.textContent = String(allTasks.filter((task) => runningStatuses.has(task.status)).length);
-      metricAccountTotalEl.textContent = String(state.accountTotal);
+      // 用 pagination.total，避免 page_size 超限导致 422 后指标一直为 0
+      const tasksMeta = await fetchJson("/api/tasks?page_size=1");
+      const taskTotal = Number(tasksMeta.pagination?.total || 0);
+      let running = 0;
+      for (const st of ["queued", "running", "stopping"]) {
+        const d = await fetchJson(`/api/tasks?status=${encodeURIComponent(st)}&page_size=1`);
+        running += Number(d.pagination?.total || 0);
+      }
+      const accountsMeta = await fetchJson("/api/accounts?page_size=1");
+      const accountTotal = Number(accountsMeta.pagination?.total || 0);
+
+      metricTaskTotalEl.textContent = String(taskTotal);
+      metricTaskRunningEl.textContent = String(running);
+      metricAccountTotalEl.textContent = String(accountTotal);
       metricAccountSelectedEl.textContent = String(state.selectedAccountIds.size);
     } catch (error) {
       console.error("Failed to update metrics:", error);
@@ -217,8 +241,7 @@
 
   async function renderAccountFilters() {
     try {
-      const allTasksData = await fetchJson("/api/tasks?page_size=1000");
-      const allTasks = allTasksData.tasks || [];
+      const allTasks = await fetchAllTasksForUi();
       const options = [
         '<option value="all">全部任务</option>',
         ...allTasks.map((task) => (
@@ -471,6 +494,7 @@
     const start = state.accountTotal ? ((state.accountPage - 1) * state.accountPageSize) + 1 : 0;
     const end = state.accountTotal ? Math.min(state.accountPage * state.accountPageSize, state.accountTotal) : 0;
     accountsMetaEl.textContent = `筛选结果 ${state.accountTotal} 个，当前页 ${state.accounts.length} 个，已选择 ${state.selectedAccountIds.size} 个`;
+    if (metricAccountSelectedEl) metricAccountSelectedEl.textContent = String(state.selectedAccountIds.size);
     accountsDownloadBtnEl.disabled = state.selectedAccountIds.size === 0;
     accountsDeleteBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsCpaBatchBtnEl) accountsCpaBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
