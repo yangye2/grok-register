@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 · Grok Register Console</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="login-body">
+  <div class="login-shell">
+    <form id="loginForm" class="login-card" autocomplete="on">
+      <div class="login-brand">
+        <div class="brand-mark">GR</div>
+        <div>
+          <div class="brand-kicker">Console</div>
+          <h1>Grok Register</h1>
+          <p>请登录后继续</p>
+        </div>
+      </div>
+      <label class="field">
+        <span>用户名</span>
+        <input id="loginUsername" name="username" type="text" required autocomplete="username" placeholder="用户名">
+      </label>
+      <label class="field">
+        <span>密码</span>
+        <input id="loginPassword" name="password" type="password" required autocomplete="current-password" placeholder="密码">
+      </label>
+      <p id="loginMessage" class="form-message" role="alert"></p>
+      <button class="button" type="submit" id="loginSubmitBtn">登录</button>
+    </form>
+  </div>
+  <script>
+    (function () {
+      const form = document.getElementById("loginForm");
+      const msg = document.getElementById("loginMessage");
+      const btn = document.getElementById("loginSubmitBtn");
+      const userEl = document.getElementById("loginUsername");
+      const passEl = document.getElementById("loginPassword");
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        msg.textContent = "";
+        msg.className = "form-message";
+        btn.disabled = true;
+        try {
+          const response = await fetch("/api/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify({
+              username: userEl.value.trim(),
+              password: passEl.value,
+            }),
+          });
+          const raw = await response.text();
+          let data = null;
+          try { data = raw ? JSON.parse(raw) : null; } catch (_e) { data = null; }
+          if (!response.ok) {
+            const detail = (data && data.detail) || raw || ("登录失败 (HTTP " + response.status + ")");
+            throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+          }
+          window.location.href = "/";
+        } catch (error) {
+          msg.textContent = error.message || "登录失败";
+          msg.className = "form-message error";
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

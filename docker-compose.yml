@@ -24,6 +24,11 @@ services:
     command: python /workspace/apps/console/app.py
     shm_size: 1gb
     environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      GROK_REGISTER_AUTH_USER: ${GROK_REGISTER_AUTH_USER:-admin}
+      GROK_REGISTER_AUTH_PASSWORD: ${GROK_REGISTER_AUTH_PASSWORD:-}
+      GROK_REGISTER_AUTH_SECRET: ${GROK_REGISTER_AUTH_SECRET:-}
+      GROK_REGISTER_AUTH_SESSION_HOURS: ${GROK_REGISTER_AUTH_SESSION_HOURS:-168}
       GROK_REGISTER_SOURCE_DIR: /workspace
       GROK_REGISTER_PYTHON: /usr/local/bin/python
       GROK_REGISTER_CONSOLE_HOST: 0.0.0.0

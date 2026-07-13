@@ -33,6 +33,8 @@
   const settingsMessageEl = document.getElementById("settingsMessage");
   const stopBtnEl = document.getElementById("stopBtn");
   const refreshBtnEl = document.getElementById("refreshBtn");
+  const logoutBtnEl = document.getElementById("logoutBtn");
+  const sidebarUserEl = document.getElementById("sidebarUser");
   const healthRefreshBtnEl = document.getElementById("healthRefreshBtn");
   const toggleAdvancedBtnEl = document.getElementById("toggleAdvancedBtn");
   const toggleMailBtnEl = document.getElementById("toggleMailBtn");
@@ -744,7 +746,15 @@
   }
 
   async function fetchJson(url, options) {
-    const response = await fetch(url, options);
+    const opts = Object.assign({ credentials: "same-origin" }, options || {});
+    if (opts.headers == null && opts.body && !(opts.body instanceof FormData)) {
+      opts.headers = { "Content-Type": "application/json" };
+    }
+    const response = await fetch(url, opts);
+    if (response.status === 401 && !String(url).includes("/api/auth/")) {
+      window.location.href = "/login";
+      throw new Error("未登录或登录已过期");
+    }
     const rawText = await response.text();
     const contentType = String(response.headers.get("content-type") || "").toLowerCase();
     let data = null;
@@ -1275,6 +1285,31 @@
     toggleMailBtnEl.textContent = detailMetaEl.classList.contains("hidden") ? "展开临时邮箱参数" : "收起临时邮箱参数";
   });
 
+
+  async function initAuthUi() {
+    try {
+      const data = await fetchJson("/api/auth/status");
+      if (data.auth_enabled) {
+        if (sidebarUserEl) {
+          sidebarUserEl.textContent = data.username ? `已登录：${data.username}` : "已登录";
+          sidebarUserEl.classList.remove("hidden");
+        }
+        if (logoutBtnEl) logoutBtnEl.classList.remove("hidden");
+      }
+    } catch (_error) {
+      // ignore
+    }
+  }
+
+  if (logoutBtnEl) {
+    logoutBtnEl.addEventListener("click", async () => {
+      try {
+        await fetchJson("/api/auth/logout", { method: "POST", body: "{}" });
+      } catch (_e) {}
+      window.location.href = "/login";
+    });
+  }
+  initAuthUi();
   initTheme();
   setDefaults();
   renderDefaultMailDetail();

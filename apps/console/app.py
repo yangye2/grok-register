@@ -22,12 +22,15 @@ from typing import Any
 from urllib.parse import urlparse
 
 import requests
+import hmac
+import secrets
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
 from pydantic import BaseModel, Field
+from starlette.middleware.sessions import SessionMiddleware
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -54,6 +57,13 @@ SOURCE_VENV_PYTHON = Path(
 ).expanduser()
 MAX_CONCURRENT_TASKS = max(1, int(os.getenv("GROK_REGISTER_CONSOLE_MAX_CONCURRENT_TASKS", "1")))
 SUPERVISOR_INTERVAL = max(1.0, float(os.getenv("GROK_REGISTER_CONSOLE_POLL_INTERVAL", "2")))
+
+# Console login (enabled when GROK_REGISTER_AUTH_PASSWORD is non-empty)
+AUTH_USER = (os.getenv("GROK_REGISTER_AUTH_USER", "admin") or "admin").strip()
+AUTH_PASSWORD = (os.getenv("GROK_REGISTER_AUTH_PASSWORD", "") or "").strip()
+AUTH_ENABLED = bool(AUTH_PASSWORD)
+AUTH_SESSION_SECRET = (os.getenv("GROK_REGISTER_AUTH_SECRET", "") or "").strip() or secrets.token_hex(32)
+AUTH_SESSION_MAX_AGE = max(3600, int(os.getenv("GROK_REGISTER_AUTH_SESSION_HOURS", "168")) * 3600)
 
 REGISTER_RUNNER_DIR = SOURCE_PROJECT / "apps" / "register-runner"
 CPA_WORKER_DIR = SOURCE_PROJECT / "apps" / "cpa-worker"
@@ -2721,6 +2731,95 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Grok Register Console", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
+
+
+class LoginPayload(BaseModel):
+    username: str = ""
+    password: str = ""
+
+
+_AUTH_PUBLIC_PATHS = {
+    "/login",
+    "/api/auth/login",
+    "/api/auth/status",
+}
+
+
+def _is_auth_public_path(path: str) -> bool:
+    if path.startswith("/static"):
+        return True
+    return path in _AUTH_PUBLIC_PATHS
+
+
+@app.middleware("http")
+async def require_console_auth(request: Request, call_next):
+    """Protect pages and APIs when AUTH_PASSWORD is configured."""
+    if not AUTH_ENABLED:
+        return await call_next(request)
+    path = request.url.path or "/"
+    if _is_auth_public_path(path):
+        return await call_next(request)
+    user = request.session.get("auth_user")
+    if user:
+        return await call_next(request)
+    if path.startswith("/api/"):
+        return JSONResponse({"detail": "未登录或登录已过期"}, status_code=401)
+    return RedirectResponse(url="/login", status_code=302)
+
+
+# SessionMiddleware must be outermost so request.session is available in auth middleware
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=AUTH_SESSION_SECRET,
+    max_age=AUTH_SESSION_MAX_AGE,
+    same_site="lax",
+    https_only=False,
+)
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request) -> HTMLResponse:
+    if AUTH_ENABLED and request.session.get("auth_user"):
+        return RedirectResponse(url="/", status_code=302)
+    if not AUTH_ENABLED:
+        return RedirectResponse(url="/", status_code=302)
+    return TEMPLATES.TemplateResponse(
+        request,
+        "login.html",
+        {"request": request, "auth_enabled": AUTH_ENABLED},
+    )
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request) -> dict[str, Any]:
+    user = str(request.session.get("auth_user") or "")
+    return {
+        "auth_enabled": AUTH_ENABLED,
+        "authenticated": (not AUTH_ENABLED) or bool(user),
+        "username": user if AUTH_ENABLED else "",
+    }
+
+
+@app.post("/api/auth/login")
+def auth_login(payload: LoginPayload, request: Request) -> dict[str, Any]:
+    if not AUTH_ENABLED:
+        return {"ok": True, "auth_enabled": False, "username": ""}
+    username = str(payload.username or "").strip()
+    password = str(payload.password or "")
+    user_ok = hmac.compare_digest(username, AUTH_USER)
+    pass_ok = hmac.compare_digest(password, AUTH_PASSWORD)
+    if not (user_ok and pass_ok):
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    request.session["auth_user"] = AUTH_USER
+    return {"ok": True, "auth_enabled": True, "username": AUTH_USER}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request) -> dict[str, Any]:
+    request.session.clear()
+    return {"ok": True}
+
+
 
 
 @app.get("/", response_class=HTMLResponse)

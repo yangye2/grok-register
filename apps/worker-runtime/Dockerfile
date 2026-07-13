@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     ca-certificates \
     fonts-noto-cjk \
+    tzdata \
     libasound2 \
     libatk-bridge2.0-0 \
     libatk1.0-0 \
@@ -52,7 +53,8 @@ COPY apps/cpa-worker /workspace/apps/cpa-worker
 COPY turnstilePatch /workspace/turnstilePatch
 COPY apps/console /workspace/apps/console
 
-ENV GROK_REGISTER_SOURCE_DIR=/workspace \
+ENV TZ=Asia/Shanghai \
+    GROK_REGISTER_SOURCE_DIR=/workspace \
     GROK_REGISTER_PYTHON=/usr/local/bin/python \
     GROK_REGISTER_CONSOLE_HOST=0.0.0.0 \
     GROK_REGISTER_CONSOLE_PORT=18600
