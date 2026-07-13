@@ -89,7 +89,7 @@
               </label>
               <label>
                 <span>邮箱域名覆盖</span>
-                <input name="temp_mail_domain" placeholder="留空则用系统默认">
+                <input name="temp_mail_domain" placeholder="a.com,b.com 或留空用系统默认">
               </label>
               <label>
                 <span>邮箱管理口令 / DuckMail API Key</span>
@@ -115,6 +115,11 @@
             </div>
             <div class="panel-actions">
               <button id="accountsRefreshBtn" class="button button-secondary" type="button">刷新 SSO</button>
+              <button id="accountsSelectFilteredBtn" class="button button-secondary" type="button">全选筛选结果</button>
+              <button id="accountsCpaBatchBtn" class="button" type="button" disabled>批量授权并推送</button>
+              <button id="accountsCpaPushBatchBtn" class="button button-secondary" type="button" disabled>批量推送</button>
+              <button id="accountsCpaCancelBtn" class="button button-danger" type="button" disabled>停止队列</button>
+              <button id="accountsCpaExportBtn" class="button button-secondary" type="button" disabled>导出结果</button>
               <button id="accountsDownloadBtn" class="button" type="button">批量下载</button>
               <button id="accountsDeleteBtn" class="button button-danger" type="button">批量删除</button>
             </div>
@@ -141,6 +146,16 @@
             </label>
           </div>
           <div id="accountsMeta" class="health-meta">等待加载</div>
+          <div id="accountsCpaQueuePanel" class="account-cpa-log-panel hidden">
+            <div class="task-row">
+              <strong id="accountsCpaQueueTitle">CPA 全局队列</strong>
+              <span id="accountsCpaQueueMeta" class="meta-label"></span>
+            </div>
+            <div class="progress-track" style="height:8px;background:rgba(127,127,127,.25);border-radius:4px;overflow:hidden;margin:8px 0;">
+              <div id="accountsCpaQueueBar" style="height:100%;width:0%;background:#3b82f6;transition:width .2s;"></div>
+            </div>
+            <div id="accountsCpaQueueMessage" class="health-meta">空闲</div>
+          </div>
           <div id="accountCpaLogPanel" class="account-cpa-log-panel hidden">
             <div class="task-row">
               <strong id="accountCpaLogTitle">CPA 日志</strong>
@@ -209,7 +224,19 @@
             </label>
             <label>
               <span>邮箱域名</span>
-              <input name="temp_mail_domain" placeholder="example.com">
+              <input name="temp_mail_domain" placeholder="example.com 或多个 a.com,b.com">
+            </label>
+            <label>
+              <span>授权失败移除阈值</span>
+              <input name="domain_auth_fail_threshold" type="number" min="1" max="100" title="同一邮箱域名授权测活失败达到该次数后自动移出域名池">
+            </label>
+            <label>
+              <span>自动移除失败域名</span>
+              <input name="domain_auth_fail_auto_remove" type="checkbox" title="授权验证多次失败后自动标记并移出邮箱域名池">
+            </label>
+            <label class="full">
+              <span>已移除域名</span>
+              <input name="temp_mail_domains_removed" placeholder="自动填充，可手动清理；重新写回邮箱域名可恢复" title="授权多次失败后自动移入此处，不再参与注册选域">
             </label>
             <label>
               <span>邮箱管理口令 / DuckMail API Key</span>
@@ -266,6 +293,34 @@
             <label>
               <span>远程上传重试次数</span>
               <input name="cpa_cloud_upload_retries" type="number" min="1" max="10">
+            </label>
+            <label>
+              <span>CPA 队列失败重试次数</span>
+              <input name="cpa_batch_retry_count" type="number" min="0" max="5" title="每个账号失败后额外重试次数，0 表示不重试">
+            </label>
+            <label>
+              <span>浏览器复用回收间隔（账号数）</span>
+              <input name="cpa_mint_browser_recycle_every" type="number" min="0" max="200" title="每处理 N 个账号重启一次浏览器，0 表示不回收">
+            </label>
+            <label>
+              <span>推送前测活</span>
+              <input name="cpa_health_check_before_upload" type="checkbox" title="推送远程 CPA 前先用 chat/completions 测活，失败则放弃推送">
+            </label>
+            <label>
+              <span>测活超时（秒）</span>
+              <input name="cpa_health_check_timeout" type="number" min="3" max="120" title="测活 HTTP 超时">
+            </label>
+            <label>
+              <span>测活模型</span>
+              <input name="cpa_health_check_model" placeholder="grok-4.5" title="测活请求使用的模型">
+            </label>
+            <label class="full">
+              <span>测活请求 Headers</span>
+              <textarea name="cpa_health_check_headers" rows="6" placeholder="x-grok-client-version: 0.2.93&#10;User-Agent: grok-shell/0.2.93 (linux; x86_64)" title="每行一条 Header，格式 Key: Value 或 Key=Value；也可填 JSON 对象。Authorization 由 access_token 自动生成，无需配置"></textarea>
+            </label>
+            <label>
+              <span>合并授权文件 headers</span>
+              <input name="cpa_health_check_use_file_headers" type="checkbox" title="是否合并 CPA 授权 JSON 内的 headers 字段（默认开启）">
             </label>
             <div class="form-actions full">
               <button class="button" type="submit">保存默认配置</button>

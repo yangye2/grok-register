@@ -26,16 +26,23 @@ ghcr.io/yangye2/grok-register:latest
 镜像由 `apps/worker-runtime/Dockerfile` 构建，包含：
 
 - Python 3.12
-- Chromium
-- Xvfb
-- 根目录 `requirements.txt`
-- `apps/console`
-- `apps/register-runner`
-- `apps/cpa-worker`
+- Chromium / Xvfb
+- 根目录 `requirements.txt` + Console 依赖
+- `apps/console`（控制台、任务调度、账号管理、设置库）
+- `apps/register-runner`（注册流程）
+- `apps/cpa-worker`（CPA 授权/推送、`cpa_xai`、**`health_check` 测活**）
 - `turnstilePatch`
 - `config.example.json`
 
-所以 GitHub 镜像构建成功后，容器内已经有注册、xAI 授权、CPA 推送所需代码。
+说明：
+
+- 根目录另有一份开发用 `health_check/` / `cpa_export.py` 等，**不会**打进镜像；运行时只使用 `apps/*` 副本。
+- 注册任务启动时会把 `cpa_export.py`、`cpa_xai/`、`health_check/` 等复制到隔离 `task_dir`，保证「注册成功 → 测活 → 推送 CPA」链路可用。
+- 账号批量授权走 Console 直接加载 `apps/cpa-worker/cpa_export.py`，同目录已带 `health_check`。
+
+近期功能（测活 headers 可配置、多次授权失败自动移除邮箱域名）主要落在 `apps/console` + `apps/cpa-worker`，**无需改 GitHub workflow / Dockerfile 结构**；拉新镜像并重启即可。
+
+域名失败统计写在 Console SQLite（`runtime/console` volume），阈值与自动移除在控制台「设置」中配置。
 
 ## 服务器部署
 
@@ -90,6 +97,8 @@ GROK_STACK_CONSOLE_BIND=0.0.0.0
 
 默认是 `127.0.0.1`，只允许服务器本机访问。
 
+测活 headers、域名失败阈值等进阶项优先在控制台 Web 设置里改（写入 SQLite），不强制写进 `.env`。
+
 ## 持久化目录
 
 `docker-compose.yml` 默认挂载：
@@ -101,7 +110,7 @@ GROK_STACK_CONSOLE_BIND=0.0.0.0
 
 这意味着容器重建后：
 
-- 控制台任务记录和账号库不会丢。
+- 控制台任务记录、账号库、域名失败统计不会丢。
 - CPA 授权文件不会丢。
 
 ## 环境检查

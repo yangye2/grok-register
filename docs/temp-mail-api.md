@@ -22,7 +22,9 @@
 
 - `temp_mail_api_base`
 - `temp_mail_admin_password`
-- `temp_mail_domain`
+- `temp_mail_domain`（支持逗号分隔多域名）
+- `temp_mail_domains`（可选域名池数组）
+- `temp_mail_domain_pick`（`round_robin` / `random`）
 - `temp_mail_site_password`
 - `proxy`
 

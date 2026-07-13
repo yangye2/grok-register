@@ -40,6 +40,144 @@ def _cloud_management_key(config: dict) -> str:
     ).strip()
 
 
+
+def _import_cpa_health_check():
+    """Load health_check.test_cpa_auth_file from project health_check package."""
+    try:
+        from health_check.health_check import test_cpa_auth_file  # type: ignore
+        return test_cpa_auth_file
+    except Exception:
+        pass
+    # Fallback: load file next to this module / workspace layout
+    import importlib.util
+
+    candidates = [
+        _REG_DIR / "health_check" / "health_check.py",
+        Path(__file__).resolve().parent / "health_check" / "health_check.py",
+    ]
+    env_src = str(os.environ.get("GROK_REGISTER_SOURCE_DIR") or "").strip()
+    if env_src:
+        root = Path(env_src).expanduser().resolve()
+        candidates.extend(
+            [
+                root / "apps" / "cpa-worker" / "health_check" / "health_check.py",
+                root / "health_check" / "health_check.py",
+            ]
+        )
+    # When cpa_export lives under apps/cpa-worker, sibling package is local.
+    # When copied into an isolated task_dir, env/workspace fallback covers Docker.
+    here = Path(__file__).resolve().parent
+    candidates.append(here.parent / "cpa-worker" / "health_check" / "health_check.py")
+    candidates.append(here.parent.parent / "apps" / "cpa-worker" / "health_check" / "health_check.py")
+
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not path.is_file():
+            continue
+        spec = importlib.util.spec_from_file_location("cpa_health_check_mod", path)
+        if spec is None or spec.loader is None:
+            continue
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        fn = getattr(mod, "test_cpa_auth_file", None)
+        if callable(fn):
+            return fn
+    raise ImportError("cannot import health_check.test_cpa_auth_file")
+
+
+
+def health_check_cpa_auth_before_upload(
+    path_value: str | Path | None,
+    config: dict,
+    log: Callable[[str], None],
+) -> dict:
+    """Run chat/completions health check before remote CPA push.
+
+    Returns:
+      {ok: True} when alive or check disabled/skipped
+      {ok: False, health_failed: True, error, message, path} when dead
+    """
+    enabled = bool(config.get("cpa_health_check_before_upload", True))
+    if not enabled:
+        return {"ok": True, "skipped": True, "reason": "disabled"}
+
+    path = Path(path_value or "").expanduser().resolve()
+    if not path.is_file():
+        return {
+            "ok": False,
+            "health_failed": True,
+            "error": "file_not_found",
+            "message": "授权文件不存在，无法测活",
+            "path": str(path),
+        }
+
+    base_url = str(
+        config.get("cpa_base_url")
+        or config.get("cpa_health_check_base_url")
+        or "https://cli-chat-proxy.grok.com/v1"
+    ).strip()
+    model = str(config.get("cpa_health_check_model") or "grok-4.5").strip() or "grok-4.5"
+    try:
+        timeout = float(config.get("cpa_health_check_timeout", 15) or 15)
+    except (TypeError, ValueError):
+        timeout = 15.0
+    proxy = str(config.get("cpa_proxy") or config.get("proxy") or "").strip() or None
+    extra_headers = config.get("cpa_health_check_headers")
+    use_file_headers = bool(config.get("cpa_health_check_use_file_headers", True))
+
+    log(f"[cpa-health] 推送前测活: {path.name} model={model}")
+    try:
+        test_fn = _import_cpa_health_check()
+        ok, message = test_fn(
+            path,
+            test_url=base_url,
+            model=model,
+            timeout=timeout,
+            proxy=proxy,
+            extra_headers=extra_headers,
+            use_file_headers=use_file_headers,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log(f"[cpa-health] 测活模块异常: {exc}")
+        return {
+            "ok": False,
+            "health_failed": True,
+            "error": f"测活异常: {exc}",
+            "message": str(exc),
+            "path": str(path),
+        }
+
+    if ok:
+        log(f"[cpa-health] 测活通过: {path.name}")
+        return {"ok": True, "path": str(path), "message": message}
+
+    log(f"[cpa-health] 测活失败，放弃推送: {path.name} -> {message}")
+    # optional isolate
+    if bool(config.get("cpa_health_check_isolate_invalid", False)):
+        try:
+            invalid_dir = path.parent / "invalid"
+            invalid_dir.mkdir(parents=True, exist_ok=True)
+            dest = invalid_dir / path.name
+            if path.resolve() != dest.resolve():
+                shutil.move(str(path), str(dest))
+                path = dest
+                log(f"[cpa-health] 已隔离无效文件 -> {dest}")
+        except Exception as exc:  # noqa: BLE001
+            log(f"[cpa-health] 隔离无效文件失败: {exc}")
+
+    return {
+        "ok": False,
+        "health_failed": True,
+        "error": f"测活失败: {message}",
+        "message": message,
+        "path": str(path),
+    }
+
+
 def upload_cpa_auth_to_cloud(
     path_value: str | Path | None,
     config: dict,
@@ -52,6 +190,20 @@ def upload_cpa_auth_to_cloud(
     path = Path(path_value or "").expanduser().resolve()
     if not path.is_file():
         return {"ok": False, "error": "file_not_found", "path": str(path)}
+
+    # 先测活，失败则不推送
+    health = health_check_cpa_auth_before_upload(path, config, log)
+    if not health.get("ok"):
+        return {
+            "ok": False,
+            "health_failed": True,
+            "error": health.get("error") or health.get("message") or "health_check_failed",
+            "message": health.get("message") or "",
+            "path": str(health.get("path") or path),
+            "health": health,
+        }
+    if health.get("path"):
+        path = Path(str(health["path"]))
 
     api_base = _cloud_management_base(
         str(config.get("cpa_cloud_api_base") or os.environ.get("CPA_CLOUD_API_BASE") or "")

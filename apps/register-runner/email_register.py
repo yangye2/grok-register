@@ -5,6 +5,7 @@ import json
 import random
 import re
 import string
+import threading
 import time
 from email import policy
 from email.parser import BytesParser
@@ -44,9 +45,22 @@ TEMP_MAIL_ADMIN_PASSWORD = str(
     or ""
 )
 TEMP_MAIL_DOMAIN = str(_conf.get("temp_mail_domain") or _conf.get("duckmail_domain") or "")
+# Domain pool: list or comma-separated string; also accepts nested defaultDomains
+TEMP_MAIL_DOMAINS_RAW = _conf.get("temp_mail_domains")
+if TEMP_MAIL_DOMAINS_RAW in (None, ""):
+    TEMP_MAIL_DOMAINS_RAW = _conf.get("defaultDomains") or ""
+TEMP_MAIL_DOMAIN_PICK = str(_conf.get("temp_mail_domain_pick") or "round_robin").strip().lower()
+TEMP_MAIL_DOMAINS_REMOVED_RAW = (
+    _conf.get("temp_mail_domains_removed")
+    or _conf.get("temp_mail_domains_disabled")
+    or ""
+)
 TEMP_MAIL_SITE_PASSWORD = str(_conf.get("temp_mail_site_password", ""))
 PROXY = str(_conf.get("proxy", ""))
 TEMP_MAIL_PROVIDER = str(_conf.get("temp_mail_provider") or "").strip().lower()
+
+_domain_rr_lock = threading.Lock()
+_domain_rr_index = 0
 
 # ============================================================
 # 适配层：为 DrissionPage_example.py 提供简单接口
@@ -84,6 +98,62 @@ def get_oai_code(dev_token: str, email: str, timeout: int = 30) -> Optional[str]
 # ============================================================
 # 临时邮箱核心函数
 # ============================================================
+
+
+
+def _parse_domain_list(value: Any) -> List[str]:
+    """Parse domain pool from list / comma-separated / multi-line string."""
+    if value is None:
+        return []
+    items: List[str] = []
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            items.extend(_parse_domain_list(item))
+    else:
+        text_v = str(value).strip()
+        if not text_v:
+            return []
+        parts = re.split(r"[,;，、\s]+", text_v)
+        items = [p.strip() for p in parts if p and p.strip()]
+
+    out: List[str] = []
+    seen: set[str] = set()
+    for item in items:
+        domain = str(item or "").strip().lstrip("@").lower()
+        if not domain or domain in seen:
+            continue
+        if "." not in domain or " " in domain:
+            continue
+        seen.add(domain)
+        out.append(domain)
+    return out
+
+
+def configured_domain_pool() -> List[str]:
+    """Return configured domain pool (explicit list preferred)."""
+    pool = _parse_domain_list(TEMP_MAIL_DOMAINS_RAW)
+    if not pool:
+        pool = _parse_domain_list(TEMP_MAIL_DOMAIN)
+    removed_set = set(_parse_domain_list(TEMP_MAIL_DOMAINS_REMOVED_RAW))
+    if removed_set:
+        pool = [d for d in pool if d not in removed_set]
+    return pool
+
+
+def _pick_domain(pool: List[str]) -> str:
+    """Pick one domain from pool by temp_mail_domain_pick strategy."""
+    if not pool:
+        return ""
+    if len(pool) == 1:
+        return pool[0]
+    mode = (TEMP_MAIL_DOMAIN_PICK or "round_robin").lower()
+    if mode in {"random", "rand", "shuffle"}:
+        return random.choice(pool)
+    global _domain_rr_index
+    with _domain_rr_lock:
+        domain = pool[_domain_rr_index % len(pool)]
+        _domain_rr_index += 1
+        return domain
 
 
 def _detect_mail_provider(api_base: str) -> str:
@@ -176,8 +246,14 @@ def _extract_duckmail_domain_name(item: Dict[str, Any]) -> str:
 
 
 def _resolve_duckmail_domain(session, use_cffi, api_base: str) -> str:
-    if TEMP_MAIL_DOMAIN:
-        return TEMP_MAIL_DOMAIN
+    pool = configured_domain_pool()
+    if pool:
+        domain = _pick_domain(pool)
+        print(
+            f"[*] DuckMail domain pool pick: {domain} "
+            f"(pool={len(pool)}, pick={TEMP_MAIL_DOMAIN_PICK or 'round_robin'})"
+        )
+        return domain
 
     headers = _build_duckmail_headers(TEMP_MAIL_ADMIN_PASSWORD)
     res = _do_request(
@@ -198,7 +274,7 @@ def _resolve_duckmail_domain(session, use_cffi, api_base: str) -> str:
 
     domains = data.get("hydra:member") or data.get("data") or data.get("results") or []
     if not isinstance(domains, list) or not domains:
-        raise Exception("DuckMail 域名列表为空，请在配置里显式填写 temp_mail_domain")
+        raise Exception("DuckMail 域名列表为空，请在配置里显式填写 temp_mail_domain 或 temp_mail_domains")
 
     public_verified: List[str] = []
     verified: List[str] = []
@@ -209,6 +285,7 @@ def _resolve_duckmail_domain(session, use_cffi, api_base: str) -> str:
         domain = _extract_duckmail_domain_name(item)
         if not domain:
             continue
+        domain = str(domain).strip().lstrip("@").lower()
         fallback.append(domain)
         if item.get("isVerified") is True:
             verified.append(domain)
@@ -216,19 +293,29 @@ def _resolve_duckmail_domain(session, use_cffi, api_base: str) -> str:
                 public_verified.append(domain)
 
     for candidates in (public_verified, verified, fallback):
-        if candidates:
-            return candidates[0]
-    raise Exception("DuckMail 域名列表里没有可用域名，请在配置里显式填写 temp_mail_domain")
+        uniq: List[str] = []
+        seen: set[str] = set()
+        for d in candidates:
+            if d and d not in seen:
+                seen.add(d)
+                uniq.append(d)
+        if uniq:
+            domain = _pick_domain(uniq)
+            print(f"[*] DuckMail auto domain pick: {domain} (candidates={len(uniq)})")
+            return domain
+    raise Exception("DuckMail 域名列表里没有可用域名，请在配置里显式填写 temp_mail_domain 或 temp_mail_domains")
 
 
 def _create_duckmail_email() -> Tuple[str, str, str]:
     api_base = TEMP_MAIL_API_BASE.rstrip("/")
     session, use_cffi = _create_session()
-    domain = _resolve_duckmail_domain(session, use_cffi, api_base)
     create_headers = _build_duckmail_headers(TEMP_MAIL_ADMIN_PASSWORD)
     last_error = ""
+    pool = configured_domain_pool()
+    max_attempts = max(5, len(pool) * 2) if pool else 5
 
-    for _ in range(5):
+    for attempt in range(max_attempts):
+        domain = _resolve_duckmail_domain(session, use_cffi, api_base)
         email_local = _generate_local_part(random.randint(8, 12))
         email = f"{email_local}@{domain}"
         password = _generate_mail_password()
@@ -271,9 +358,14 @@ def _create_duckmail_email() -> Tuple[str, str, str]:
 
         if res.status_code in {409, 422}:
             last_error = f"{res.status_code} - {res.text[:200]}"
+            print(f"[!] DuckMail create conflict, retry domain/local ({attempt + 1}/{max_attempts}): {last_error}")
             continue
 
-        raise Exception(f"创建 DuckMail 邮箱失败: {res.status_code} - {res.text[:200]}")
+        last_error = f"{res.status_code} - {res.text[:200]}"
+        if pool and attempt + 1 < max_attempts:
+            print(f"[!] DuckMail create failed, try next domain ({attempt + 1}/{max_attempts}): {last_error}")
+            continue
+        raise Exception(f"创建 DuckMail 邮箱失败: {last_error}")
 
     raise Exception(f"创建 DuckMail 邮箱失败，重试后仍冲突: {last_error}")
 
@@ -292,40 +384,61 @@ def create_temp_email() -> Tuple[str, str, str]:
 
     if not TEMP_MAIL_ADMIN_PASSWORD:
         raise Exception("temp_mail_admin_password 未设置，无法创建临时邮箱")
-    if not TEMP_MAIL_DOMAIN:
-        raise Exception("temp_mail_domain 未设置，无法创建临时邮箱")
+
+    pool = configured_domain_pool()
+    if not pool:
+        raise Exception("temp_mail_domain / temp_mail_domains 未设置，无法创建临时邮箱")
 
     api_base = TEMP_MAIL_API_BASE.rstrip("/")
-    email_local = _generate_local_part(random.randint(8, 12))
     session, use_cffi = _create_session()
     headers = _build_headers({"x-admin-auth": TEMP_MAIL_ADMIN_PASSWORD})
+    last_error = ""
+    max_attempts = max(3, len(pool) * 2)
 
     try:
-        res = _do_request(
-            session,
-            use_cffi,
-            "post",
-            f"{api_base}/admin/new_address",
-            json={
-                "name": email_local,
-                "domain": TEMP_MAIL_DOMAIN,
-                "enablePrefix": False,
-            },
-            headers=headers,
-            timeout=20,
-        )
-        if res.status_code != 200:
-            raise Exception(f"创建邮箱失败: {res.status_code} - {res.text[:200]}")
+        for attempt in range(max_attempts):
+            domain = _pick_domain(pool)
+            email_local = _generate_local_part(random.randint(8, 12))
+            print(
+                f"[*] Temp Mail domain pool pick: {domain} "
+                f"(pool={len(pool)}, pick={TEMP_MAIL_DOMAIN_PICK or 'round_robin'}, "
+                f"attempt={attempt + 1}/{max_attempts})"
+            )
+            res = _do_request(
+                session,
+                use_cffi,
+                "post",
+                f"{api_base}/admin/new_address",
+                json={
+                    "name": email_local,
+                    "domain": domain,
+                    "enablePrefix": False,
+                },
+                headers=headers,
+                timeout=20,
+            )
+            if res.status_code != 200:
+                last_error = f"{res.status_code} - {res.text[:200]}"
+                if attempt + 1 < max_attempts:
+                    print(f"[!] Temp Mail create failed, try next domain: {last_error}")
+                    continue
+                raise Exception(f"创建邮箱失败: {last_error}")
 
-        data = res.json()
-        email = data.get("address") or ""
-        mail_token = data.get("jwt") or ""
-        password = data.get("password") or ""
-        if not email or not mail_token:
-            raise Exception(f"接口返回缺少 address/jwt: {data}")
+            data = res.json()
+            email = data.get("address") or ""
+            mail_token = data.get("jwt") or ""
+            password = data.get("password") or ""
+            if not email or not mail_token:
+                last_error = f"接口返回缺少 address/jwt: {data}"
+                if attempt + 1 < max_attempts:
+                    print(f"[!] Temp Mail bad response, try next domain: {last_error}")
+                    continue
+                raise Exception(last_error)
 
-        print(f"[*] Temp Mail 临时邮箱创建成功: {email}")
-        return email, password, mail_token
+            print(f"[*] Temp Mail 临时邮箱创建成功: {email}")
+            return email, password, mail_token
+
+        raise Exception(f"创建邮箱失败，重试耗尽: {last_error}")
     except Exception as e:
         raise Exception(f"Temp Mail 临时邮箱创建失败: {e}")
 

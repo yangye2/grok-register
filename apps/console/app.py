@@ -10,9 +10,11 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import queue
 import threading
 import time
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -56,7 +58,7 @@ SUPERVISOR_INTERVAL = max(1.0, float(os.getenv("GROK_REGISTER_CONSOLE_POLL_INTER
 REGISTER_RUNNER_DIR = SOURCE_PROJECT / "apps" / "register-runner"
 CPA_WORKER_DIR = SOURCE_PROJECT / "apps" / "cpa-worker"
 PROJECT_FILES = ("DrissionPage_example.py", "email_register.py", "cpa_export.py")
-PROJECT_DIRS = ("turnstilePatch", "cpa_xai")
+PROJECT_DIRS = ("turnstilePatch", "cpa_xai", "health_check")
 
 
 def resolve_source_python() -> str:
@@ -76,6 +78,7 @@ def missing_source_items() -> list[str]:
         REGISTER_RUNNER_DIR / "email_register.py",
         CPA_WORKER_DIR / "cpa_export.py",
         CPA_WORKER_DIR / "cpa_xai" / "__init__.py",
+        CPA_WORKER_DIR / "health_check" / "health_check.py",
         SOURCE_PROJECT / "turnstilePatch" / "manifest.json",
     ]
     return [str(path) for path in required_paths if not path.exists()]
@@ -96,7 +99,26 @@ LINE_RE_FILLED_EMAIL = re.compile(r"已填写邮箱并点击注册:\s*([^\s]+)")
 
 db_lock = threading.RLock()
 cpa_jobs_lock = threading.Lock()
-cpa_jobs: dict[int, threading.Thread] = {}
+cpa_jobs: dict[int, threading.Thread] = {}  # busy marker; shared worker thread
+cpa_work_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+cpa_worker_thread: threading.Thread | None = None
+cpa_cancel_event = threading.Event()
+cpa_queue_state: dict[str, Any] = {
+    "active": False,
+    "cancel_requested": False,
+    "mode": "",
+    "total": 0,
+    "done": 0,
+    "success": 0,
+    "failed": 0,
+    "cancelled": 0,
+    "current_id": None,
+    "current_email": "",
+    "started_at": "",
+    "finished_at": "",
+    "message": "",
+    "results": [],
+}
 
 
 def now_iso() -> str:
@@ -210,6 +232,22 @@ def init_db() -> None:
         ):
             if name not in columns:
                 conn.execute(f"ALTER TABLE accounts ADD COLUMN {name} {definition}")
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_domain_stats (
+                domain TEXT PRIMARY KEY,
+                fail_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'active',
+                last_error TEXT,
+                last_failed_at TEXT,
+                last_success_at TEXT,
+                disabled_at TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
 
 
 def load_source_defaults() -> dict[str, Any]:
@@ -496,13 +534,367 @@ class TaskCreate(BaseModel):
     notes: str = ""
 
 
+
+def _as_nonneg_int(value: Any, default: int = 0, *, maximum: int | None = None) -> int:
+    try:
+        if value is None or value == "":
+            n = int(default)
+        else:
+            n = int(value)
+    except (TypeError, ValueError):
+        n = int(default)
+    if n < 0:
+        n = 0
+    if maximum is not None and n > maximum:
+        n = maximum
+    return n
+
+
+
+def _normalize_health_headers(value: Any) -> str:
+    """Normalize health-check headers config to multi-line ``Key: Value`` text."""
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        lines = []
+        for key, raw in value.items():
+            k = str(key).strip()
+            if not k or raw is None:
+                continue
+            lines.append(f"{k}: {str(raw).strip()}")
+        return "\n".join(lines)
+    text_value = str(value).replace("\r\n", "\n").strip()
+    return text_value
+
+
+def _default_health_headers_text() -> str:
+    return (
+        "x-grok-client-version: 0.2.93\n"
+        "x-xai-token-auth: xai-grok-cli\n"
+        "x-authenticateresponse: authenticate-response\n"
+        "x-grok-client-identifier: grok-shell\n"
+        "User-Agent: grok-shell/0.2.93 (linux; x86_64)"
+    )
+
+
+def _parse_domain_list_value(value: Any) -> list[str]:
+    """Parse domain list from list / comma / multi-line text."""
+    if value is None:
+        return []
+    items: list[str] = []
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            items.extend(_parse_domain_list_value(item))
+    else:
+        text_v = str(value).strip()
+        if not text_v:
+            return []
+        parts = re.split(r"[,;，、\s]+", text_v)
+        items = [p.strip() for p in parts if p and p.strip()]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        domain = str(item or "").strip().lstrip("@").lower()
+        if not domain or domain in seen:
+            continue
+        if "." not in domain or " " in domain:
+            continue
+        seen.add(domain)
+        out.append(domain)
+    return out
+
+
+def _join_domain_list(domains: list[str]) -> str:
+    return ",".join(domains)
+
+
+def _extract_email_domain(email: str) -> str:
+    text = str(email or "").strip().lower()
+    if "@" not in text:
+        return ""
+    domain = text.rsplit("@", 1)[-1].strip().lstrip("@")
+    if not domain or "." not in domain:
+        return ""
+    return domain
+
+
+def _normalize_domain_pool_settings(data: dict[str, Any]) -> dict[str, Any]:
+    """Keep active/removed domain lists consistent (active wins if re-added)."""
+    active = _parse_domain_list_value(data.get("temp_mail_domain"))
+    removed = _parse_domain_list_value(data.get("temp_mail_domains_removed"))
+    active_set = set(active)
+    removed = [d for d in removed if d not in active_set]
+    data["temp_mail_domain"] = _join_domain_list(active)
+    data["temp_mail_domains_removed"] = _join_domain_list(removed)
+    data["domain_auth_fail_threshold"] = max(
+        1, _as_nonneg_int(data.get("domain_auth_fail_threshold"), 3, maximum=100)
+    )
+    if "domain_auth_fail_auto_remove" not in data:
+        data["domain_auth_fail_auto_remove"] = True
+    else:
+        data["domain_auth_fail_auto_remove"] = bool(data.get("domain_auth_fail_auto_remove"))
+    return data
+
+
+def _save_settings_dict(data: dict[str, Any]) -> dict[str, Any]:
+    payload = _normalize_domain_pool_settings(dict(data or {}))
+    execute(
+        """
+        INSERT INTO settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        """,
+        ("system", json.dumps(payload, ensure_ascii=False), now_iso()),
+    )
+    return payload
+
+
+def _remove_domain_from_settings_pool(domain: str, *, reason: str = "") -> dict[str, Any]:
+    """Mark domain removed and strip it from active temp_mail_domain pool."""
+    domain = str(domain or "").strip().lstrip("@").lower()
+    if not domain:
+        return {"removed": False, "reason": "empty_domain"}
+
+    current = dict(read_settings() or {})
+    merged = merged_defaults()
+    for key in (
+        "temp_mail_domain",
+        "temp_mail_domains_removed",
+        "domain_auth_fail_threshold",
+        "domain_auth_fail_auto_remove",
+        "temp_mail_api_base",
+        "temp_mail_admin_password",
+        "temp_mail_site_password",
+        "proxy",
+        "browser_proxy",
+        "cpa_export_enabled",
+        "cpa_auth_dir",
+        "cpa_copy_to_hotload",
+        "cpa_hotload_dir",
+        "cpa_proxy",
+        "cpa_headless",
+        "cpa_mint_timeout_sec",
+        "cpa_cloud_upload_enabled",
+        "cpa_cloud_api_base",
+        "cpa_cloud_management_key",
+        "cpa_cloud_upload_timeout",
+        "cpa_cloud_upload_retries",
+        "cpa_batch_retry_count",
+        "cpa_mint_browser_recycle_every",
+        "cpa_health_check_before_upload",
+        "cpa_health_check_timeout",
+        "cpa_health_check_model",
+        "cpa_health_check_headers",
+        "cpa_health_check_use_file_headers",
+    ):
+        if key not in current and key in merged:
+            current[key] = merged.get(key)
+
+    active = _parse_domain_list_value(current.get("temp_mail_domain"))
+    removed = _parse_domain_list_value(current.get("temp_mail_domains_removed"))
+    changed = False
+    if domain in active:
+        active = [d for d in active if d != domain]
+        changed = True
+    if domain not in removed:
+        removed.append(domain)
+        changed = True
+    if not changed:
+        return {
+            "removed": False,
+            "domain": domain,
+            "reason": "already_removed",
+            "active": active,
+            "removed_list": removed,
+        }
+
+    current["temp_mail_domain"] = _join_domain_list(active)
+    current["temp_mail_domains_removed"] = _join_domain_list(removed)
+    if reason:
+        current["temp_mail_domain_last_remove_reason"] = f"{domain}: {reason}"[:500]
+    _save_settings_dict(current)
+    return {
+        "removed": True,
+        "domain": domain,
+        "reason": reason,
+        "active": active,
+        "removed_list": removed,
+    }
+
+
+def record_domain_auth_failure(
+    email: str,
+    error: str = "",
+    log: Any = None,
+) -> dict[str, Any]:
+    """Increment domain auth-fail counter; auto-remove domain when threshold reached."""
+    domain = _extract_email_domain(email)
+    if not domain:
+        return {"ok": False, "reason": "no_domain"}
+
+    defaults = merged_defaults()
+    threshold = max(1, _as_nonneg_int(defaults.get("domain_auth_fail_threshold"), 3, maximum=100))
+    auto_remove = bool(defaults.get("domain_auth_fail_auto_remove", True))
+    now = now_iso()
+    err = str(error or "")[:500]
+
+    with db_lock, get_conn() as conn:
+        row = conn.execute(
+            "SELECT domain, fail_count, success_count, status FROM email_domain_stats WHERE domain = ?",
+            (domain,),
+        ).fetchone()
+        if row is None:
+            fail_count = 1
+            success_count = 0
+            status = "active"
+            conn.execute(
+                """
+                INSERT INTO email_domain_stats
+                (domain, fail_count, success_count, status, last_error, last_failed_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (domain, fail_count, success_count, status, err, now, now),
+            )
+        else:
+            fail_count = int(row["fail_count"] or 0) + 1
+            success_count = int(row["success_count"] or 0)
+            status = str(row["status"] or "active")
+            conn.execute(
+                """
+                UPDATE email_domain_stats
+                SET fail_count = ?, last_error = ?, last_failed_at = ?, updated_at = ?
+                WHERE domain = ?
+                """,
+                (fail_count, err, now, now, domain),
+            )
+        conn.commit()
+
+    result: dict[str, Any] = {
+        "ok": True,
+        "domain": domain,
+        "fail_count": fail_count,
+        "success_count": success_count,
+        "threshold": threshold,
+        "status": status,
+        "removed": False,
+    }
+    msg = f"[domain] 授权验证失败累计 {fail_count}/{threshold}: {domain}"
+    if callable(log):
+        log(msg)
+    else:
+        print(msg, flush=True)
+
+    if fail_count >= threshold and auto_remove and status != "disabled":
+        remove_info = _remove_domain_from_settings_pool(
+            domain,
+            reason=f"auth_fail x{fail_count}: {err}"[:300],
+        )
+        with db_lock, get_conn() as conn:
+            conn.execute(
+                """
+                UPDATE email_domain_stats
+                SET status = ?, disabled_at = ?, updated_at = ?
+                WHERE domain = ?
+                """,
+                ("disabled", now, now, domain),
+            )
+            conn.commit()
+        result["status"] = "disabled"
+        result["removed"] = bool(remove_info.get("removed")) or remove_info.get("reason") == "already_removed"
+        result["remove_info"] = remove_info
+        active_left = ",".join(remove_info.get("active") or []) or "(empty)"
+        done = f"[domain] 域名 {domain} 授权验证失败达 {fail_count} 次，已标记并移出邮箱域名池；剩余: {active_left}"
+        if callable(log):
+            log(done)
+        else:
+            print(done, flush=True)
+    return result
+
+
+def record_domain_auth_success(email: str, log: Any = None) -> dict[str, Any]:
+    """Reset fail count on successful auth push for active domain."""
+    domain = _extract_email_domain(email)
+    if not domain:
+        return {"ok": False, "reason": "no_domain"}
+    now = now_iso()
+    with db_lock, get_conn() as conn:
+        row = conn.execute(
+            "SELECT domain, fail_count, success_count, status FROM email_domain_stats WHERE domain = ?",
+            (domain,),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                """
+                INSERT INTO email_domain_stats
+                (domain, fail_count, success_count, status, last_success_at, updated_at)
+                VALUES (?, 0, 1, 'active', ?, ?)
+                """,
+                (domain, now, now),
+            )
+            fail_count = 0
+            success_count = 1
+            status = "active"
+        else:
+            status = str(row["status"] or "active")
+            success_count = int(row["success_count"] or 0) + 1
+            fail_count = 0 if status == "active" else int(row["fail_count"] or 0)
+            conn.execute(
+                """
+                UPDATE email_domain_stats
+                SET fail_count = ?, success_count = ?, last_success_at = ?, updated_at = ?
+                WHERE domain = ?
+                """,
+                (fail_count, success_count, now, now, domain),
+            )
+        conn.commit()
+    return {
+        "ok": True,
+        "domain": domain,
+        "fail_count": fail_count,
+        "success_count": success_count,
+        "status": status,
+    }
+
+
+def list_email_domain_stats() -> list[dict[str, Any]]:
+    rows = fetch_all(
+        """
+        SELECT domain, fail_count, success_count, status, last_error,
+               last_failed_at, last_success_at, disabled_at, updated_at
+        FROM email_domain_stats
+        ORDER BY
+          CASE WHEN status = 'disabled' THEN 0 ELSE 1 END,
+          fail_count DESC,
+          domain ASC
+        """
+    )
+    out = []
+    for row in rows:
+        out.append(
+            {
+                "domain": row["domain"],
+                "fail_count": int(row["fail_count"] or 0),
+                "success_count": int(row["success_count"] or 0),
+                "status": row["status"] or "active",
+                "last_error": row["last_error"] or "",
+                "last_failed_at": row["last_failed_at"] or "",
+                "last_success_at": row["last_success_at"] or "",
+                "disabled_at": row["disabled_at"] or "",
+                "updated_at": row["updated_at"] or "",
+            }
+        )
+    return out
+
 class SystemSettings(BaseModel):
     proxy: str = ""
     browser_proxy: str = ""
     temp_mail_api_base: str = ""
     temp_mail_admin_password: str = ""
     temp_mail_domain: str = ""
+    temp_mail_domains_removed: str = ""
     temp_mail_site_password: str = ""
+    domain_auth_fail_threshold: int = Field(default=3, ge=1, le=100)
+    domain_auth_fail_auto_remove: bool = True
     cpa_export_enabled: bool = True
     cpa_auth_dir: str = "./cpa_auths"
     cpa_copy_to_hotload: bool = False
@@ -515,6 +907,19 @@ class SystemSettings(BaseModel):
     cpa_cloud_management_key: str | None = None
     cpa_cloud_upload_timeout: int = Field(default=30, ge=5, le=180)
     cpa_cloud_upload_retries: int = Field(default=3, ge=1, le=10)
+    cpa_batch_retry_count: int = Field(default=1, ge=0, le=5)
+    cpa_mint_browser_recycle_every: int = Field(default=15, ge=0, le=200)
+    cpa_health_check_before_upload: bool = True
+    cpa_health_check_timeout: int = Field(default=15, ge=3, le=120)
+    cpa_health_check_model: str = "grok-4.5"
+    cpa_health_check_headers: str = (
+        "x-grok-client-version: 0.2.93\n"
+        "x-xai-token-auth: xai-grok-cli\n"
+        "x-authenticateresponse: authenticate-response\n"
+        "x-grok-client-identifier: grok-shell\n"
+        "User-Agent: grok-shell/0.2.93 (linux; x86_64)"
+    )
+    cpa_health_check_use_file_headers: bool = True
 
 
 @dataclass
@@ -539,6 +944,21 @@ def write_settings(settings: SystemSettings) -> dict[str, Any]:
     data = settings.model_dump()
     if data["cpa_cloud_management_key"] is None:
         data["cpa_cloud_management_key"] = str(read_settings().get("cpa_cloud_management_key") or "")
+    data = _normalize_domain_pool_settings(data)
+    # Re-activate domains that user put back into the active pool
+    active_set = set(_parse_domain_list_value(data.get("temp_mail_domain")))
+    for domain in active_set:
+        try:
+            execute_no_return(
+                """
+                UPDATE email_domain_stats
+                SET status = 'active', fail_count = 0, disabled_at = NULL, updated_at = ?
+                WHERE domain = ? AND status = 'disabled'
+                """,
+                (now_iso(), domain),
+            )
+        except Exception:
+            pass
     execute(
         """
         INSERT INTO settings (key, value, updated_at)
@@ -563,16 +983,50 @@ def merged_defaults() -> dict[str, Any]:
         base["proxy"] = str(saved.get("proxy", ""))
     if saved.get("browser_proxy") is not None:
         base["browser_proxy"] = str(saved.get("browser_proxy", ""))
-    for key in ("temp_mail_api_base", "temp_mail_admin_password", "temp_mail_domain", "temp_mail_site_password"):
+    for key in (
+        "temp_mail_api_base",
+        "temp_mail_admin_password",
+        "temp_mail_domain",
+        "temp_mail_domains_removed",
+        "temp_mail_site_password",
+    ):
         if key in saved:
             base[key] = str(saved.get(key, ""))
+    for key in ("domain_auth_fail_threshold", "domain_auth_fail_auto_remove"):
+        if key in saved:
+            base[key] = saved[key]
     for key in ("cpa_export_enabled", "cpa_auth_dir", "cpa_copy_to_hotload", "cpa_hotload_dir",
                 "cpa_proxy", "cpa_headless", "cpa_mint_timeout_sec", "cpa_cloud_upload_enabled",
                 "cpa_cloud_api_base", "cpa_cloud_management_key", "cpa_cloud_upload_timeout",
-                "cpa_cloud_upload_retries"):
+                "cpa_cloud_upload_retries", "cpa_batch_retry_count", "cpa_mint_browser_recycle_every",
+                "cpa_health_check_before_upload", "cpa_health_check_timeout", "cpa_health_check_model",
+                "cpa_health_check_headers", "cpa_health_check_use_file_headers"):
         if key in saved:
             base[key] = saved[key]
     base.pop("api", None)
+    # Defaults for CPA queue settings even when absent from saved config
+    base["cpa_batch_retry_count"] = _as_nonneg_int(base.get("cpa_batch_retry_count"), 1, maximum=5)
+    base["cpa_mint_browser_recycle_every"] = _as_nonneg_int(
+        base.get("cpa_mint_browser_recycle_every"), 15, maximum=200
+    )
+    if "cpa_health_check_before_upload" not in base:
+        base["cpa_health_check_before_upload"] = True
+    else:
+        base["cpa_health_check_before_upload"] = bool(base.get("cpa_health_check_before_upload"))
+    base["cpa_health_check_timeout"] = _as_nonneg_int(base.get("cpa_health_check_timeout"), 15, maximum=120)
+    if base["cpa_health_check_timeout"] < 3:
+        base["cpa_health_check_timeout"] = 3
+    model = str(base.get("cpa_health_check_model") or "grok-4.5").strip() or "grok-4.5"
+    base["cpa_health_check_model"] = model
+    headers_text = _normalize_health_headers(base.get("cpa_health_check_headers"))
+    if not headers_text:
+        headers_text = _default_health_headers_text()
+    base["cpa_health_check_headers"] = headers_text
+    if "cpa_health_check_use_file_headers" not in base:
+        base["cpa_health_check_use_file_headers"] = True
+    else:
+        base["cpa_health_check_use_file_headers"] = bool(base.get("cpa_health_check_use_file_headers"))
+    base = _normalize_domain_pool_settings(base)
     return base
 
 
@@ -585,6 +1039,7 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
         "temp_mail_api_base": defaults.get("temp_mail_api_base", "") if payload.temp_mail_api_base is None else payload.temp_mail_api_base.strip(),
         "temp_mail_admin_password": defaults.get("temp_mail_admin_password", "") if payload.temp_mail_admin_password is None else payload.temp_mail_admin_password.strip(),
         "temp_mail_domain": defaults.get("temp_mail_domain", "") if payload.temp_mail_domain is None else payload.temp_mail_domain.strip(),
+        "temp_mail_domains_removed": str(defaults.get("temp_mail_domains_removed") or ""),
         "temp_mail_site_password": defaults.get("temp_mail_site_password", "") if payload.temp_mail_site_password is None else payload.temp_mail_site_password.strip(),
         "cpa_export_enabled": defaults.get("cpa_export_enabled", True) if payload.cpa_export_enabled is None else payload.cpa_export_enabled,
         "cpa_auth_dir": defaults.get("cpa_auth_dir", "./cpa_auths") if payload.cpa_auth_dir is None else payload.cpa_auth_dir.strip(),
@@ -598,7 +1053,15 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
         "cpa_probe_after_write": True,
         "cpa_probe_chat": False,
         "cpa_mint_cookie_inject": True,
-        "cpa_mint_browser_reuse": False,
+        "cpa_mint_browser_reuse": True,
+        "cpa_mint_browser_recycle_every": _as_nonneg_int(defaults.get("cpa_mint_browser_recycle_every"), 15, maximum=200),
+        "cpa_health_check_before_upload": bool(defaults.get("cpa_health_check_before_upload", True)),
+        "cpa_health_check_timeout": _as_nonneg_int(defaults.get("cpa_health_check_timeout"), 15, maximum=120),
+        "cpa_health_check_model": str(defaults.get("cpa_health_check_model") or "grok-4.5"),
+        "cpa_health_check_headers": _normalize_health_headers(
+            defaults.get("cpa_health_check_headers") or _default_health_headers_text()
+        ),
+        "cpa_health_check_use_file_headers": bool(defaults.get("cpa_health_check_use_file_headers", True)),
         "cpa_cloud_upload_enabled": defaults.get("cpa_cloud_upload_enabled", False),
         "cpa_cloud_api_base": defaults.get("cpa_cloud_api_base", ""),
         "cpa_cloud_upload_timeout": defaults.get("cpa_cloud_upload_timeout", 30),
@@ -848,12 +1311,13 @@ def resolve_account_cpa_path(row: sqlite3.Row) -> Path | None:
     return None
 
 
-def run_account_cpa_export(account_id: int) -> None:
+def run_account_cpa_export(account_id: int, *, manage_job: bool = True) -> bool:
     """Mint and optionally push CPA credentials for one stored account."""
     def account_log(message: str) -> None:
         print(f"[account-cpa:{account_id}] {message}", flush=True)
         append_account_cpa_log(account_id, message)
 
+    ok = False
     try:
         row = account_row(account_id)
         email = str(row["email"] or "").strip()
@@ -868,6 +1332,25 @@ def run_account_cpa_export(account_id: int) -> None:
         account_cpa_config = normalize_console_cpa_paths(merged_defaults())
         if not str(account_cpa_config.get("cpa_auth_dir") or "").strip():
             account_cpa_config["cpa_auth_dir"] = str(SOURCE_PROJECT / "cpa_auths")
+        account_cpa_config["cpa_mint_browser_reuse"] = True
+        account_cpa_config["cpa_mint_browser_recycle_every"] = _as_nonneg_int(
+            account_cpa_config.get("cpa_mint_browser_recycle_every"), 15, maximum=200
+        )
+        account_cpa_config["cpa_health_check_before_upload"] = bool(
+            account_cpa_config.get("cpa_health_check_before_upload", True)
+        )
+        account_cpa_config["cpa_health_check_timeout"] = _as_nonneg_int(
+            account_cpa_config.get("cpa_health_check_timeout"), 15, maximum=120
+        )
+        account_cpa_config["cpa_health_check_model"] = str(
+            account_cpa_config.get("cpa_health_check_model") or "grok-4.5"
+        )
+        account_cpa_config["cpa_health_check_headers"] = _normalize_health_headers(
+            account_cpa_config.get("cpa_health_check_headers") or _default_health_headers_text()
+        )
+        account_cpa_config["cpa_health_check_use_file_headers"] = bool(
+            account_cpa_config.get("cpa_health_check_use_file_headers", True)
+        )
 
         result = cpa_export.export_cpa_xai_for_account(
             email,
@@ -893,19 +1376,48 @@ def run_account_cpa_export(account_id: int) -> None:
                     account_id,
                 ),
             )
-            return
+            return False
         if not result.get("ok"):
             raise RuntimeError(str(result.get("error") or result.get("reason") or "CPA 授权失败"))
 
         cloud = result.get("cloud_cpa_upload") or {}
+        cpa_path_value = str(result.get("cpa_path") or result.get("path") or "")
+        if cloud.get("health_failed"):
+            status = "invalid"
+            cloud_error = str(cloud.get("error") or cloud.get("message") or "测活失败")
+            account_log(f"测活失败，已放弃推送: {cloud_error}")
+            if cloud.get("path"):
+                cpa_path_value = str(cloud.get("path") or cpa_path_value)
+            execute_no_return(
+                """
+                UPDATE accounts
+                SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = ?, cpa_updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    cpa_path_value,
+                    "",
+                    cloud_error,
+                    now_iso(),
+                    account_id,
+                ),
+            )
+            try:
+                record_domain_auth_failure(email, cloud_error, log=account_log)
+            except Exception as domain_exc:  # noqa: BLE001
+                account_log(f"域名失败统计异常: {domain_exc}")
+            ok = False
+            return ok
+
         status = "uploaded" if cloud.get("ok") else "generated"
         cloud_error = "" if cloud.get("ok") or cloud.get("skipped") else f"远程推送失败: {cloud.get('error') or cloud}"
         if status == "uploaded":
-            account_log(f"CPA 授权文件已推送远程: {result.get('cpa_path') or result.get('path') or ''}")
+            account_log(f"CPA 授权文件已推送远程: {cpa_path_value}")
         elif cloud_error:
             account_log(cloud_error)
         else:
-            account_log(f"CPA 授权文件已生成: {result.get('cpa_path') or result.get('path') or ''}")
+            account_log(f"CPA 授权文件已生成: {cpa_path_value}")
         execute_no_return(
             """
             UPDATE accounts
@@ -914,31 +1426,41 @@ def run_account_cpa_export(account_id: int) -> None:
             """,
             (
                 status,
-                str(result.get("cpa_path") or result.get("path") or ""),
+                cpa_path_value,
                 now_iso() if cloud.get("ok") else "",
                 cloud_error,
                 now_iso(),
                 account_id,
             ),
         )
+        if status == "uploaded":
+            try:
+                record_domain_auth_success(email, log=account_log)
+            except Exception as domain_exc:  # noqa: BLE001
+                account_log(f"域名成功统计异常: {domain_exc}")
+        ok = True
     except Exception as exc:
         append_account_cpa_log(account_id, f"CPA 授权失败: {exc}")
         execute_no_return(
             "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
             ("failed", str(exc), now_iso(), account_id),
         )
+        ok = False
     finally:
-        with cpa_jobs_lock:
-            cpa_jobs.pop(account_id, None)
+        if manage_job:
+            with cpa_jobs_lock:
+                cpa_jobs.pop(account_id, None)
+    return ok
 
 
-def run_account_cpa_upload(account_id: int) -> None:
+def run_account_cpa_upload(account_id: int, *, manage_job: bool = True) -> bool:
     """Upload an existing CPA auth file to remote CPA management."""
     def account_log(message: str) -> None:
         print(f"[account-cpa-upload:{account_id}] {message}", flush=True)
         append_account_cpa_log(account_id, message)
 
     cpa_path: Path | None = None
+    ok = False
     try:
         row = account_row(account_id)
         email = str(row["email"] or "").strip()
@@ -952,8 +1474,49 @@ def run_account_cpa_upload(account_id: int) -> None:
         cpa_export = load_cpa_export_module()
         account_cpa_config = normalize_console_cpa_paths(merged_defaults())
         account_cpa_config["cpa_cloud_upload_enabled"] = True
+        account_cpa_config["cpa_health_check_before_upload"] = bool(
+            account_cpa_config.get("cpa_health_check_before_upload", True)
+        )
+        account_cpa_config["cpa_health_check_timeout"] = _as_nonneg_int(
+            account_cpa_config.get("cpa_health_check_timeout"), 15, maximum=120
+        )
+        account_cpa_config["cpa_health_check_model"] = str(
+            account_cpa_config.get("cpa_health_check_model") or "grok-4.5"
+        )
+        account_cpa_config["cpa_health_check_headers"] = _normalize_health_headers(
+            account_cpa_config.get("cpa_health_check_headers") or _default_health_headers_text()
+        )
+        account_cpa_config["cpa_health_check_use_file_headers"] = bool(
+            account_cpa_config.get("cpa_health_check_use_file_headers", True)
+        )
 
         result = cpa_export.upload_cpa_auth_to_cloud(cpa_path, account_cpa_config, account_log)
+        if result.get("health_failed"):
+            error = str(result.get("error") or result.get("message") or "测活失败")
+            account_log(f"测活失败，已放弃推送: {error}")
+            path_value = str(result.get("path") or cpa_path)
+            execute_no_return(
+                """
+                UPDATE accounts
+                SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = ?, cpa_updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    "invalid",
+                    path_value,
+                    "",
+                    error,
+                    now_iso(),
+                    account_id,
+                ),
+            )
+            try:
+                record_domain_auth_failure(email, error, log=account_log)
+            except Exception as domain_exc:  # noqa: BLE001
+                account_log(f"域名失败统计异常: {domain_exc}")
+            ok = False
+            return ok
+
         if result.get("ok"):
             account_log(f"CPA 授权文件已推送远程: {cpa_path.name}")
             execute_no_return(
@@ -971,7 +1534,12 @@ def run_account_cpa_upload(account_id: int) -> None:
                     account_id,
                 ),
             )
-            return
+            try:
+                record_domain_auth_success(email, log=account_log)
+            except Exception as domain_exc:  # noqa: BLE001
+                account_log(f"域名成功统计异常: {domain_exc}")
+            ok = True
+            return ok
 
         if result.get("skipped"):
             raise RuntimeError(str(result.get("reason") or "push skipped"))
@@ -1001,9 +1569,404 @@ def run_account_cpa_upload(account_id: int) -> None:
             "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
             (status, str(exc), now_iso(), account_id),
         )
+        ok = False
     finally:
+        if manage_job:
+            with cpa_jobs_lock:
+                cpa_jobs.pop(account_id, None)
+    return ok
+
+
+def _cpa_queue_snapshot() -> dict[str, Any]:
+    with cpa_jobs_lock:
+        snap = deepcopy(cpa_queue_state)
+        snap["queue_size"] = cpa_work_queue.qsize()
+        snap["busy_ids"] = sorted(cpa_jobs.keys())
+        return snap
+
+
+def _validate_cpa_cloud_config(mode: str) -> str | None:
+    """Return error message when cloud push config is incomplete for the given mode."""
+    settings = merged_defaults()
+    saved = read_settings()
+    enabled = bool(settings.get("cpa_cloud_upload_enabled"))
+    api_base = str(settings.get("cpa_cloud_api_base") or "").strip()
+    management_key = str(saved.get("cpa_cloud_management_key") or settings.get("cpa_cloud_management_key") or "").strip()
+
+    if mode == "push_only":
+        if not enabled:
+            return "未开启「推送 CPA 授权到远程」，无法批量推送"
+        if not api_base:
+            return "未配置远程 CPA 管理地址"
+        if not management_key:
+            return "未配置远程 CPA 管理密钥"
+        return None
+
+    # authorize_and_push: only require full cloud config when upload is enabled
+    if enabled:
+        if not api_base:
+            return "已开启远程推送，但未配置远程 CPA 管理地址"
+        if not management_key:
+            return "已开启远程推送，但未配置远程 CPA 管理密钥"
+    return None
+
+
+def _mark_account_cpa_cancelled(account_id: int, reason: str = "批量任务已取消") -> None:
+    execute_no_return(
+        "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
+        ("cancelled", reason, now_iso(), account_id),
+    )
+    append_account_cpa_log(account_id, reason)
+
+
+def _record_cpa_result(account_id: int, email: str, status: str, error: str = "") -> None:
+    item = {
+        "id": account_id,
+        "email": email,
+        "status": status,
+        "error": error,
+        "at": now_iso(),
+    }
+    results = cpa_queue_state.setdefault("results", [])
+    results.append(item)
+    if len(results) > 500:
+        del results[:-500]
+
+
+def _drain_cancelled_cpa_jobs() -> int:
+    drained = 0
+    while True:
+        try:
+            item = cpa_work_queue.get_nowait()
+        except queue.Empty:
+            break
+        account_id = int(item.get("account_id") or 0)
+        email = ""
+        try:
+            row = fetch_one("SELECT email FROM accounts WHERE id = ?", (account_id,))
+            email = str(row_get(row, "email", "") or "") if row else ""
+        except Exception:
+            pass
+        _mark_account_cpa_cancelled(account_id, "排队中取消：批量任务已停止")
+        _record_cpa_result(account_id, email, "cancelled", "cancelled while queued")
+        cpa_queue_state["cancelled"] = int(cpa_queue_state.get("cancelled") or 0) + 1
+        cpa_queue_state["done"] = int(cpa_queue_state.get("done") or 0) + 1
+        cpa_jobs.pop(account_id, None)
+        cpa_work_queue.task_done()
+        drained += 1
+    return drained
+
+
+def _finish_cpa_session_if_idle() -> None:
+    if cpa_work_queue.qsize() > 0 or cpa_queue_state.get("current_id") is not None:
+        return
+    if not cpa_queue_state.get("active"):
+        return
+    cpa_queue_state["active"] = False
+    cpa_queue_state["finished_at"] = now_iso()
+    cpa_queue_state["current_id"] = None
+    cpa_queue_state["current_email"] = ""
+    if cpa_cancel_event.is_set():
+        cpa_queue_state["message"] = (
+            f"已停止：成功 {cpa_queue_state.get('success', 0)}，"
+            f"失败 {cpa_queue_state.get('failed', 0)}，"
+            f"取消 {cpa_queue_state.get('cancelled', 0)}"
+        )
+    else:
+        cpa_queue_state["message"] = (
+            f"全部完成：成功 {cpa_queue_state.get('success', 0)}，"
+            f"失败 {cpa_queue_state.get('failed', 0)}"
+        )
+    cpa_cancel_event.clear()
+
+
+def _shutdown_shared_mint_browser() -> None:
+    try:
+        if str(CPA_WORKER_DIR) not in sys.path:
+            sys.path.insert(0, str(CPA_WORKER_DIR))
+        from cpa_xai.browser_confirm import shutdown_mint_browsers  # type: ignore
+
+        shutdown_mint_browsers()
+        print("[account-cpa-queue] shared mint browser closed", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[account-cpa-queue] close mint browser failed: {exc}", flush=True)
+
+
+def _process_one_cpa_job(account_id: int, mode: str) -> tuple[bool, str, str]:
+    """Run one account with retries. Returns (ok, email, error)."""
+    defaults = merged_defaults()
+    retries = _as_nonneg_int(defaults.get("cpa_batch_retry_count"), 1, maximum=5)
+    attempts = retries + 1
+
+    row = fetch_one("SELECT * FROM accounts WHERE id = ?", (account_id,))
+    email = str(row_get(row, "email", "") or "").strip() if row else ""
+    last_error = ""
+
+    for attempt in range(1, attempts + 1):
+        if cpa_cancel_event.is_set():
+            return False, email, "cancelled"
+
+        if attempt > 1:
+            append_account_cpa_log(account_id, f"第 {attempt}/{attempts} 次重试")
+            print(f"[account-cpa-queue] retry {attempt}/{attempts} id={account_id}", flush=True)
+
+        if mode == "push_only":
+            execute_no_return(
+                "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
+                ("uploading", now_iso(), account_id),
+            )
+            append_account_cpa_log(account_id, f"队列处理推送: {email or account_id}")
+            ok = run_account_cpa_upload(account_id, manage_job=False)
+        else:
+            execute_no_return(
+                "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
+                ("running", now_iso(), account_id),
+            )
+            append_account_cpa_log(
+                account_id,
+                f"队列处理授权并推送（全局单线程/单浏览器）: {email or account_id}",
+            )
+            ok = run_account_cpa_export(account_id, manage_job=False)
+
+        if ok:
+            return True, email, ""
+
+        row2 = fetch_one("SELECT cpa_error FROM accounts WHERE id = ?", (account_id,))
+        last_error = str(row_get(row2, "cpa_error", "") or "failed") if row2 else "failed"
+        if attempt < attempts and not cpa_cancel_event.is_set():
+            time.sleep(min(2 * attempt, 6))
+
+    return False, email, last_error
+
+
+def cpa_worker_loop() -> None:
+    """Single shared worker: sequential jobs, one browser via thread-local reuse."""
+    print("[account-cpa-queue] worker started", flush=True)
+    while True:
+        try:
+            item = cpa_work_queue.get(timeout=1.0)
+        except queue.Empty:
+            with cpa_jobs_lock:
+                if cpa_queue_state.get("active") and cpa_queue_state.get("current_id") is None:
+                    if cpa_work_queue.qsize() == 0:
+                        _shutdown_shared_mint_browser()
+                        _finish_cpa_session_if_idle()
+            continue
+
+        account_id = int(item.get("account_id") or 0)
+        mode = str(item.get("mode") or "authorize_and_push")
+
         with cpa_jobs_lock:
-            cpa_jobs.pop(account_id, None)
+            if cpa_cancel_event.is_set():
+                _mark_account_cpa_cancelled(account_id, "排队中取消：批量任务已停止")
+                _record_cpa_result(account_id, "", "cancelled", "cancelled while queued")
+                cpa_queue_state["cancelled"] = int(cpa_queue_state.get("cancelled") or 0) + 1
+                cpa_queue_state["done"] = int(cpa_queue_state.get("done") or 0) + 1
+                cpa_jobs.pop(account_id, None)
+                cpa_work_queue.task_done()
+                drained = _drain_cancelled_cpa_jobs()
+                if drained:
+                    print(f"[account-cpa-queue] drained {drained} cancelled jobs", flush=True)
+                if cpa_work_queue.qsize() == 0:
+                    _shutdown_shared_mint_browser()
+                    _finish_cpa_session_if_idle()
+                continue
+
+            row = fetch_one("SELECT email FROM accounts WHERE id = ?", (account_id,))
+            email = str(row_get(row, "email", "") or "") if row else ""
+            cpa_queue_state["current_id"] = account_id
+            cpa_queue_state["current_email"] = email
+            cpa_queue_state["mode"] = mode
+            cpa_queue_state["message"] = f"正在处理 {email or ('#' + str(account_id))}"
+
+        try:
+            ok, email, error = _process_one_cpa_job(account_id, mode)
+            with cpa_jobs_lock:
+                if cpa_cancel_event.is_set() and not ok:
+                    _mark_account_cpa_cancelled(account_id, "任务取消")
+                    _record_cpa_result(account_id, email, "cancelled", error or "cancelled")
+                    cpa_queue_state["cancelled"] = int(cpa_queue_state.get("cancelled") or 0) + 1
+                elif ok:
+                    row3 = fetch_one("SELECT cpa_status FROM accounts WHERE id = ?", (account_id,))
+                    status = str(row_get(row3, "cpa_status", "generated") or "generated") if row3 else "generated"
+                    _record_cpa_result(account_id, email, status, "")
+                    cpa_queue_state["success"] = int(cpa_queue_state.get("success") or 0) + 1
+                else:
+                    row3 = fetch_one("SELECT cpa_status, cpa_error FROM accounts WHERE id = ?", (account_id,))
+                    status = str(row_get(row3, "cpa_status", "failed") or "failed") if row3 else "failed"
+                    err = str(row_get(row3, "cpa_error", "") or error or "") if row3 else (error or "")
+                    if status not in {"invalid", "failed", "generated", "not_started"}:
+                        status = "failed"
+                    _record_cpa_result(account_id, email, status, err)
+                    cpa_queue_state["failed"] = int(cpa_queue_state.get("failed") or 0) + 1
+                cpa_queue_state["done"] = int(cpa_queue_state.get("done") or 0) + 1
+                cpa_jobs.pop(account_id, None)
+                cpa_queue_state["current_id"] = None
+                cpa_queue_state["current_email"] = ""
+        except Exception as exc:  # noqa: BLE001
+            print(f"[account-cpa-queue] job error id={account_id}: {exc}", flush=True)
+            with cpa_jobs_lock:
+                _record_cpa_result(account_id, "", "failed", str(exc))
+                cpa_queue_state["failed"] = int(cpa_queue_state.get("failed") or 0) + 1
+                cpa_queue_state["done"] = int(cpa_queue_state.get("done") or 0) + 1
+                cpa_jobs.pop(account_id, None)
+                cpa_queue_state["current_id"] = None
+                cpa_queue_state["current_email"] = ""
+                try:
+                    execute_no_return(
+                        "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
+                        ("failed", str(exc), now_iso(), account_id),
+                    )
+                except Exception:
+                    pass
+        finally:
+            cpa_work_queue.task_done()
+
+        with cpa_jobs_lock:
+            if cpa_cancel_event.is_set():
+                drained = _drain_cancelled_cpa_jobs()
+                if drained:
+                    print(f"[account-cpa-queue] drained {drained} cancelled jobs", flush=True)
+            if cpa_work_queue.qsize() == 0 and cpa_queue_state.get("current_id") is None:
+                _shutdown_shared_mint_browser()
+                _finish_cpa_session_if_idle()
+
+
+def ensure_cpa_worker() -> None:
+    global cpa_worker_thread
+    with cpa_jobs_lock:
+        if cpa_worker_thread is not None and cpa_worker_thread.is_alive():
+            return
+        cpa_worker_thread = threading.Thread(target=cpa_worker_loop, daemon=True, name="cpa-global-queue")
+        cpa_worker_thread.start()
+
+
+def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
+    """Validate and enqueue accounts into the global sequential CPA queue."""
+    mode = str(mode or "authorize_and_push").strip()
+    if mode not in {"authorize_and_push", "push_only"}:
+        raise HTTPException(status_code=400, detail="mode 仅支持 authorize_and_push 或 push_only")
+
+    cloud_error = _validate_cpa_cloud_config(mode)
+    if cloud_error:
+        raise HTTPException(status_code=400, detail=cloud_error)
+
+    ordered_ids: list[int] = []
+    seen: set[int] = set()
+    for raw_id in account_ids:
+        account_id = int(raw_id)
+        if account_id in seen:
+            continue
+        seen.add(account_id)
+        ordered_ids.append(account_id)
+
+    accepted: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    candidates: list[tuple[int, str]] = []
+
+    for account_id in ordered_ids:
+        row = fetch_one("SELECT * FROM accounts WHERE id = ?", (account_id,))
+        if row is None:
+            rejected.append({"id": account_id, "reason": "账号不存在"})
+            continue
+        email = str(row_get(row, "email", "") or "").strip()
+        if mode == "push_only":
+            if resolve_account_cpa_path(row) is None:
+                rejected.append({
+                    "id": account_id,
+                    "email": email,
+                    "reason": "未找到已生成的 CPA 授权文件，请先生成授权",
+                })
+                continue
+        else:
+            password = str(row_get(row, "password", "") or "")
+            sso = str(row_get(row, "sso", "") or "").strip()
+            if not email or not password or not sso:
+                rejected.append({
+                    "id": account_id,
+                    "email": email,
+                    "reason": "账号缺少邮箱、密码或 SSO，无法执行 CPA 授权",
+                })
+                continue
+        candidates.append((account_id, email))
+
+    to_start: list[tuple[int, str]] = []
+    with cpa_jobs_lock:
+        for account_id, email in candidates:
+            if account_id in cpa_jobs:
+                skipped.append({"id": account_id, "email": email, "reason": "CPA 任务已在队列或执行中"})
+                continue
+            to_start.append((account_id, email))
+
+        if to_start:
+            ensure_cpa_worker()
+            if not cpa_queue_state.get("active"):
+                cpa_cancel_event.clear()
+                cpa_queue_state.update({
+                    "active": True,
+                    "cancel_requested": False,
+                    "mode": mode,
+                    "total": 0,
+                    "done": 0,
+                    "success": 0,
+                    "failed": 0,
+                    "cancelled": 0,
+                    "current_id": None,
+                    "current_email": "",
+                    "started_at": now_iso(),
+                    "finished_at": "",
+                    "message": "队列已启动",
+                    "results": [],
+                })
+            else:
+                # User explicitly queued more work: clear prior cancel so new items run
+                if cpa_cancel_event.is_set() or cpa_queue_state.get("cancel_requested"):
+                    cpa_cancel_event.clear()
+                    cpa_queue_state["cancel_requested"] = False
+                    cpa_queue_state["message"] = (
+                        f"已取消停止并追加 {len(to_start)} 个账号（当前账号完成后继续）"
+                    )
+                else:
+                    cpa_queue_state["message"] = f"已向运行中队列追加 {len(to_start)} 个账号"
+
+            cpa_queue_state["total"] = int(cpa_queue_state.get("total") or 0) + len(to_start)
+            cpa_queue_state["mode"] = mode
+            worker = cpa_worker_thread
+            for account_id, email in to_start:
+                execute_no_return(
+                    "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
+                    ("queued", now_iso(), account_id),
+                )
+                append_account_cpa_log(
+                    account_id,
+                    f"已加入全局 CPA 队列（mode={mode}，单线程单浏览器）",
+                )
+                if worker is not None:
+                    cpa_jobs[account_id] = worker
+                cpa_work_queue.put({"account_id": account_id, "mode": mode})
+                accepted.append({"id": account_id, "email": email, "status": "queued"})
+
+    return {
+        "ok": True,
+        "mode": mode,
+        "worker": "global_single_thread_shared_browser",
+        "accepted": accepted,
+        "skipped": skipped,
+        "rejected": rejected,
+        "accepted_count": len(accepted),
+        "skipped_count": len(skipped),
+        "rejected_count": len(rejected),
+        "queue": _cpa_queue_snapshot(),
+    }
+
+
+
+def run_account_cpa_batch(account_ids: list[int], mode: str) -> None:
+    """Backward-compatible entry: enqueue then rely on global worker."""
+    enqueue_cpa_jobs(account_ids, mode)
+
+
 
 
 def build_accounts_where_clause(task_id: int | None, search: str) -> tuple[str, list[Any]]:
@@ -1184,7 +2147,10 @@ def copy_source_to_task_dir(task_dir: Path, task_config: dict[str, Any]) -> None
         source_dir = CPA_WORKER_DIR if file_name == "cpa_export.py" else REGISTER_RUNNER_DIR
         shutil.copy2(source_dir / file_name, task_dir / file_name)
     for dir_name in PROJECT_DIRS:
-        src = CPA_WORKER_DIR / dir_name if dir_name == "cpa_xai" else SOURCE_PROJECT / dir_name
+        if dir_name in {"cpa_xai", "health_check"}:
+            src = CPA_WORKER_DIR / dir_name
+        else:
+            src = SOURCE_PROJECT / dir_name
         dst = task_dir / dir_name
         if dst.exists():
             shutil.rmtree(dst)
@@ -1392,14 +2358,20 @@ supervisor = TaskSupervisor()
 async def lifespan(_: FastAPI):
     init_db()
     execute_no_return(
-        "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE cpa_status IN (?, ?)",
-        ("failed", "Console restarted while CPA task was running; retry the operation.", now_iso(), "running", "uploading"),
+        "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE cpa_status IN (?, ?, ?)",
+        ("failed", "Console restarted while CPA task was running; retry the operation.", now_iso(), "running", "uploading", "queued"),
     )
     sync_all_account_records()
     supervisor.start()
+    ensure_cpa_worker()
     try:
         yield
     finally:
+        cpa_cancel_event.set()
+        try:
+            _shutdown_shared_mint_browser()
+        except Exception:
+            pass
         supervisor.stop()
 
 
@@ -1449,6 +2421,68 @@ def save_settings(payload: SystemSettings) -> dict[str, Any]:
     return {"settings": {key: value for key, value in saved.items() if key != "cpa_cloud_management_key"}, "defaults": public_defaults()}
 
 
+
+@app.get("/api/email-domains")
+def get_email_domains() -> dict[str, Any]:
+    defaults = merged_defaults()
+    return {
+        "active": _parse_domain_list_value(defaults.get("temp_mail_domain")),
+        "removed": _parse_domain_list_value(defaults.get("temp_mail_domains_removed")),
+        "threshold": int(defaults.get("domain_auth_fail_threshold") or 3),
+        "auto_remove": bool(defaults.get("domain_auth_fail_auto_remove", True)),
+        "stats": list_email_domain_stats(),
+    }
+
+
+@app.post("/api/email-domains/restore")
+def restore_email_domain(payload: dict[str, Any]) -> dict[str, Any]:
+    raw = str(payload.get("domain") or "").strip().lstrip("@").lower()
+    domain = _extract_email_domain("user@" + raw) if raw and "@" not in raw else _extract_email_domain(raw)
+    if not domain:
+        domain = raw
+    if not domain or "." not in domain:
+        raise HTTPException(status_code=400, detail="domain required")
+
+    current = dict(read_settings() or {})
+    merged = merged_defaults()
+    for key in (
+        "temp_mail_domain",
+        "temp_mail_domains_removed",
+        "domain_auth_fail_threshold",
+        "domain_auth_fail_auto_remove",
+        "temp_mail_api_base",
+        "temp_mail_admin_password",
+        "temp_mail_site_password",
+        "proxy",
+        "browser_proxy",
+    ):
+        if key not in current and key in merged:
+            current[key] = merged.get(key)
+
+    active = _parse_domain_list_value(current.get("temp_mail_domain"))
+    removed = _parse_domain_list_value(current.get("temp_mail_domains_removed"))
+    if domain not in active:
+        active.append(domain)
+    removed = [d for d in removed if d != domain]
+    current["temp_mail_domain"] = _join_domain_list(active)
+    current["temp_mail_domains_removed"] = _join_domain_list(removed)
+    _save_settings_dict(current)
+    execute_no_return(
+        """
+        UPDATE email_domain_stats
+        SET status = 'active', fail_count = 0, disabled_at = NULL, updated_at = ?
+        WHERE domain = ?
+        """,
+        (now_iso(), domain),
+    )
+    return {
+        "ok": True,
+        "domain": domain,
+        "active": active,
+        "removed": removed,
+    }
+
+
 @app.get("/api/accounts")
 def list_accounts(
     task_id: int | None = Query(None, ge=1),
@@ -1481,6 +2515,105 @@ def list_accounts(
     }
 
 
+class AccountCpaBatch(BaseModel):
+    account_ids: list[int] = Field(default_factory=list)
+    mode: str = "authorize_and_push"
+
+
+class AccountIdsPayload(BaseModel):
+    account_ids: list[int] = Field(default_factory=list)
+
+
+@app.get("/api/accounts/ids")
+def list_account_ids(
+    task_id: int | None = Query(None, ge=1),
+    search: str = Query(""),
+) -> dict[str, Any]:
+    """Return all account ids matching current filters (for cross-page select-all)."""
+    sync_all_account_records()
+    where_clause, where_params = build_accounts_where_clause(task_id, search)
+    rows = fetch_all(
+        f"SELECT id FROM accounts{where_clause} ORDER BY created_at DESC, id DESC",
+        tuple(where_params),
+    )
+    ids = [int(row["id"]) for row in rows]
+    return {"ids": ids, "total": len(ids)}
+
+
+@app.post("/api/accounts/by-ids")
+def list_accounts_by_ids(payload: AccountIdsPayload) -> dict[str, Any]:
+    """Fetch full account rows by ids (cross-page download/delete)."""
+    sync_all_account_records()
+    ordered_ids: list[int] = []
+    seen: set[int] = set()
+    for raw_id in payload.account_ids:
+        account_id = int(raw_id)
+        if account_id in seen:
+            continue
+        seen.add(account_id)
+        ordered_ids.append(account_id)
+    if not ordered_ids:
+        return {"accounts": []}
+    placeholders = ",".join("?" for _ in ordered_ids)
+    rows = fetch_all(
+        f"SELECT * FROM accounts WHERE id IN ({placeholders})",
+        tuple(ordered_ids),
+    )
+    by_id = {int(row["id"]): row for row in rows}
+    accounts = [
+        serialize_account(by_id[account_id])
+        for account_id in ordered_ids
+        if account_id in by_id
+    ]
+    return {"accounts": accounts}
+
+
+@app.post("/api/accounts/cpa/batch")
+def batch_account_cpa(payload: AccountCpaBatch) -> dict[str, Any]:
+    if not payload.account_ids:
+        raise HTTPException(status_code=400, detail="请至少选择一个账号")
+    return enqueue_cpa_jobs(payload.account_ids, payload.mode)
+
+
+@app.get("/api/accounts/cpa/queue")
+def get_cpa_queue_status() -> dict[str, Any]:
+    return {"queue": _cpa_queue_snapshot()}
+
+
+@app.post("/api/accounts/cpa/queue/cancel")
+def cancel_cpa_queue() -> dict[str, Any]:
+    with cpa_jobs_lock:
+        if not cpa_queue_state.get("active") and cpa_work_queue.qsize() == 0:
+            return {"ok": True, "message": "当前没有运行中的 CPA 队列", "queue": _cpa_queue_snapshot()}
+        cpa_cancel_event.set()
+        cpa_queue_state["cancel_requested"] = True
+        cpa_queue_state["message"] = "正在停止：当前账号完成后取消剩余排队任务"
+    return {"ok": True, "message": "已请求停止 CPA 队列", "queue": _cpa_queue_snapshot()}
+
+
+@app.get("/api/accounts/cpa/queue/export")
+def export_cpa_queue_results() -> Any:
+    from fastapi.responses import Response
+
+    snap = _cpa_queue_snapshot()
+    results = snap.get("results") or []
+    lines = ["id,email,status,error,at"]
+    for item in results:
+        email = str(item.get("email") or "").replace('"', '""')
+        error = str(item.get("error") or "").replace('"', '""').replace("\n", " ")
+        lines.append(
+            f'{item.get("id","")},"{email}",{item.get("status","")},"{error}",{item.get("at","")}'
+        )
+    content = "\n".join(lines) + "\n"
+    filename = f"cpa_queue_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    return Response(
+        content=content.encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+
 @app.get("/api/accounts/{account_id}")
 def get_account(account_id: int) -> dict[str, Any]:
     sync_all_account_records()
@@ -1494,22 +2627,25 @@ def delete_account(account_id: int) -> dict[str, Any]:
     execute_no_return("DELETE FROM accounts WHERE id = ?", (account_id,))
     return {"ok": True}
 
-
 @app.post("/api/accounts/{account_id}/cpa")
 def authorize_account_cpa(account_id: int) -> dict[str, Any]:
     account_row(account_id)
-    with cpa_jobs_lock:
-        active = cpa_jobs.get(account_id)
-        if active and active.is_alive():
-            raise HTTPException(status_code=409, detail="CPA 授权任务正在执行")
-        execute_no_return(
-            "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_log = '', cpa_updated_at = ? WHERE id = ?",
-            ("running", now_iso(), account_id),
-        )
-        worker = threading.Thread(target=run_account_cpa_export, args=(account_id,), daemon=True)
-        cpa_jobs[account_id] = worker
-        worker.start()
-    return {"ok": True, "status": "running", "account_id": account_id}
+    result = enqueue_cpa_jobs([account_id], "authorize_and_push")
+    if result["accepted_count"] == 0:
+        reason = ""
+        if result["skipped"]:
+            reason = result["skipped"][0].get("reason") or "CPA 任务已在队列或执行中"
+        elif result["rejected"]:
+            reason = result["rejected"][0].get("reason") or "无法加入队列"
+        else:
+            reason = "无法加入队列"
+        raise HTTPException(status_code=409 if result["skipped"] else 400, detail=reason)
+    return {
+        "ok": True,
+        "status": "queued",
+        "account_id": account_id,
+        "queue": result.get("queue"),
+    }
 
 
 @app.post("/api/accounts/{account_id}/cpa/upload")
@@ -1517,19 +2653,24 @@ def upload_existing_account_cpa(account_id: int) -> dict[str, Any]:
     row = account_row(account_id)
     if resolve_account_cpa_path(row) is None:
         raise HTTPException(status_code=400, detail="未找到已生成的 CPA 授权文件，请先生成授权")
-    with cpa_jobs_lock:
-        active = cpa_jobs.get(account_id)
-        if active and active.is_alive():
-            raise HTTPException(status_code=409, detail="CPA 任务正在执行")
-        execute_no_return(
-            "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
-            ("uploading", now_iso(), account_id),
-        )
-        append_account_cpa_log(account_id, "手动 CPA 推送任务已启动")
-        worker = threading.Thread(target=run_account_cpa_upload, args=(account_id,), daemon=True)
-        cpa_jobs[account_id] = worker
-        worker.start()
-    return {"ok": True, "status": "uploading", "account_id": account_id}
+    result = enqueue_cpa_jobs([account_id], "push_only")
+    if result["accepted_count"] == 0:
+        reason = ""
+        if result["skipped"]:
+            reason = result["skipped"][0].get("reason") or "CPA 任务已在队列或执行中"
+        elif result["rejected"]:
+            reason = result["rejected"][0].get("reason") or "无法加入队列"
+        else:
+            reason = "无法加入队列"
+        raise HTTPException(status_code=409 if result["skipped"] else 400, detail=reason)
+    return {
+        "ok": True,
+        "status": "queued",
+        "account_id": account_id,
+        "queue": result.get("queue"),
+    }
+
+
 
 
 @app.get("/api/tasks")

@@ -63,18 +63,50 @@
 
 ## temp_mail_domain
 
-注册时实际使用的邮箱域名后缀。
+注册时实际使用的邮箱域名后缀。支持**单个域名**或**域名池**。
 
 例如：
 
-- `mail.example.com`
+- 单个：`mail.example.com`
+- 多个（逗号分隔）：`mail.example.com,mail2.example.com,mail3.example.com`
 
-这个字段很关键。就算邮箱 API 可用，如果这个域名本身被 `x.ai` 拒绝，流程也会卡在注册页。
+这个字段很重要。就算邮箱 API 可用，如果域名被 `x.ai` 拒绝，流程也会卡在注册页。
+
+域名池选取策略见 `temp_mail_domain_pick`。创建失败时会自动换域名重试。
 
 如果你用的是 DuckMail：
 
-- 可以显式填写你想用的域名
-- 也可以留空，执行器会自动从 DuckMail 域名列表里挑一个公开、已验证域名
+- 可以显式填写一个或多个域名
+- 也可以留空，执行器会从 DuckMail 公开/已验证域名列表里按策略选取
+
+## temp_mail_domains
+
+可选的域名池字段。解析优先级：
+
+1. `temp_mail_domains`（数组或逗号字符串）
+2. `temp_mail_domain`（单个或逗号字符串）
+3. 兼容旧键 `defaultDomains`
+4. DuckMail 且以上都空：调用 `/domains` 自动取
+
+示例：
+
+```json
+"temp_mail_domains": ["a.example.com", "b.example.com"]
+```
+
+## temp_mail_domain_pick
+
+域名池选取策略：
+
+- `round_robin`（默认）：按顺序轮流使用
+- `random`：每次随机选一个
+
+示例：
+
+```json
+"temp_mail_domain_pick": "round_robin"
+```
+
 
 ## temp_mail_site_password
 
