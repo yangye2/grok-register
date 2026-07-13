@@ -125,7 +125,12 @@ def health_check_cpa_auth_before_upload(
         timeout = float(config.get("cpa_health_check_timeout", 15) or 15)
     except (TypeError, ValueError):
         timeout = 15.0
-    proxy = str(config.get("cpa_proxy") or config.get("proxy") or "").strip() or None
+    proxy = str(
+        config.get("cpa_proxy")
+        or config.get("browser_proxy")
+        or config.get("proxy")
+        or ""
+    ).strip() or None
     extra_headers = config.get("cpa_health_check_headers")
     use_file_headers = bool(config.get("cpa_health_check_use_file_headers", True))
 
@@ -176,6 +181,21 @@ def health_check_cpa_auth_before_upload(
         "message": message,
         "path": str(path),
     }
+
+
+
+def _response_preview_text(text: str, *, limit: int = 240) -> str:
+    """Short error preview; omit HTML/XML bodies so logs stay readable."""
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    lower = raw[:240].lower()
+    if "<!doctype" in lower or "<html" in lower or raw.lstrip().startswith("<"):
+        tag = "html/xml"
+        if "<!doctype" in lower:
+            tag = "DOCTYPE html/xml"
+        return f"[{tag} body omitted, len={len(raw)}]"
+    return raw[:limit]
 
 
 def upload_cpa_auth_to_cloud(
@@ -230,7 +250,7 @@ def upload_cpa_auth_to_cloud(
                     files={"file": (path.name, file, "application/json")},
                     timeout=timeout,
                 )
-            preview = response.text[:300]
+            preview = _response_preview_text(response.text, limit=300)
             if 200 <= response.status_code < 300:
                 try:
                     payload: Any = response.json()

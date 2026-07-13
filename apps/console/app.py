@@ -295,6 +295,7 @@ def load_source_defaults() -> dict[str, Any]:
         "cpa_hotload_dir": "GROK_REGISTER_DEFAULT_CPA_HOTLOAD_DIR",
         "cpa_proxy": "GROK_REGISTER_DEFAULT_CPA_PROXY",
         "cpa_cloud_api_base": "CPA_CLOUD_API_BASE",
+        "cpa_cloud_management_key": "CPA_CLOUD_MANAGEMENT_KEY",
     }
     for key, env_name in string_env_map.items():
         value = os.getenv(env_name)
@@ -1269,6 +1270,60 @@ def _sanitize_file_segment(value: str) -> str:
     return "".join(out).strip("-")
 
 
+
+def build_account_cpa_config(*, force_cloud_upload: bool = False) -> dict[str, Any]:
+    """Console-side CPA config for account authorize/push (includes secrets)."""
+    account_cpa_config = normalize_console_cpa_paths(merged_defaults())
+    if not str(account_cpa_config.get("cpa_auth_dir") or "").strip():
+        account_cpa_config["cpa_auth_dir"] = str(SOURCE_PROJECT / "cpa_auths")
+
+    saved = read_settings()
+    management_key = str(
+        saved.get("cpa_cloud_management_key")
+        or account_cpa_config.get("cpa_cloud_management_key")
+        or os.environ.get("CPA_CLOUD_MANAGEMENT_KEY")
+        or os.environ.get("CLI_PROXY_MANAGEMENT_KEY")
+        or ""
+    ).strip()
+    if management_key:
+        account_cpa_config["cpa_cloud_management_key"] = management_key
+
+    if force_cloud_upload:
+        account_cpa_config["cpa_cloud_upload_enabled"] = True
+
+    account_cpa_config["cpa_mint_browser_reuse"] = True
+    account_cpa_config["cpa_mint_browser_recycle_every"] = _as_nonneg_int(
+        account_cpa_config.get("cpa_mint_browser_recycle_every"), 15, maximum=200
+    )
+    account_cpa_config["cpa_health_check_before_upload"] = bool(
+        account_cpa_config.get("cpa_health_check_before_upload", True)
+    )
+    account_cpa_config["cpa_health_check_timeout"] = _as_nonneg_int(
+        account_cpa_config.get("cpa_health_check_timeout"), 15, maximum=120
+    )
+    if account_cpa_config["cpa_health_check_timeout"] < 3:
+        account_cpa_config["cpa_health_check_timeout"] = 3
+    account_cpa_config["cpa_health_check_model"] = str(
+        account_cpa_config.get("cpa_health_check_model") or "grok-4.5"
+    ).strip() or "grok-4.5"
+    account_cpa_config["cpa_health_check_headers"] = _normalize_health_headers(
+        account_cpa_config.get("cpa_health_check_headers") or _default_health_headers_text()
+    )
+    account_cpa_config["cpa_health_check_use_file_headers"] = bool(
+        account_cpa_config.get("cpa_health_check_use_file_headers", True)
+    )
+    # Align health-check network with browser mint path
+    if not str(account_cpa_config.get("cpa_proxy") or "").strip():
+        fallback_proxy = str(
+            account_cpa_config.get("browser_proxy")
+            or account_cpa_config.get("proxy")
+            or ""
+        ).strip()
+        if fallback_proxy:
+            account_cpa_config["cpa_proxy"] = fallback_proxy
+    return account_cpa_config
+
+
 def load_cpa_export_module():
     if str(SOURCE_PROJECT) not in sys.path:
         sys.path.insert(0, str(SOURCE_PROJECT))
@@ -1328,29 +1383,7 @@ def run_account_cpa_export(account_id: int, *, manage_job: bool = True) -> bool:
         append_account_cpa_log(account_id, f"开始 CPA 授权并推送: {email}")
 
         cpa_export = load_cpa_export_module()
-
-        account_cpa_config = normalize_console_cpa_paths(merged_defaults())
-        if not str(account_cpa_config.get("cpa_auth_dir") or "").strip():
-            account_cpa_config["cpa_auth_dir"] = str(SOURCE_PROJECT / "cpa_auths")
-        account_cpa_config["cpa_mint_browser_reuse"] = True
-        account_cpa_config["cpa_mint_browser_recycle_every"] = _as_nonneg_int(
-            account_cpa_config.get("cpa_mint_browser_recycle_every"), 15, maximum=200
-        )
-        account_cpa_config["cpa_health_check_before_upload"] = bool(
-            account_cpa_config.get("cpa_health_check_before_upload", True)
-        )
-        account_cpa_config["cpa_health_check_timeout"] = _as_nonneg_int(
-            account_cpa_config.get("cpa_health_check_timeout"), 15, maximum=120
-        )
-        account_cpa_config["cpa_health_check_model"] = str(
-            account_cpa_config.get("cpa_health_check_model") or "grok-4.5"
-        )
-        account_cpa_config["cpa_health_check_headers"] = _normalize_health_headers(
-            account_cpa_config.get("cpa_health_check_headers") or _default_health_headers_text()
-        )
-        account_cpa_config["cpa_health_check_use_file_headers"] = bool(
-            account_cpa_config.get("cpa_health_check_use_file_headers", True)
-        )
+        account_cpa_config = build_account_cpa_config(force_cloud_upload=False)
 
         result = cpa_export.export_cpa_xai_for_account(
             email,
@@ -1410,14 +1443,26 @@ def run_account_cpa_export(account_id: int, *, manage_job: bool = True) -> bool:
             ok = False
             return ok
 
-        status = "uploaded" if cloud.get("ok") else "generated"
-        cloud_error = "" if cloud.get("ok") or cloud.get("skipped") else f"远程推送失败: {cloud.get('error') or cloud}"
-        if status == "uploaded":
+        cloud_enabled = bool(account_cpa_config.get("cpa_cloud_upload_enabled", False))
+        if cloud.get("ok"):
+            status = "uploaded"
+            cloud_error = ""
             account_log(f"CPA 授权文件已推送远程: {cpa_path_value}")
-        elif cloud_error:
-            account_log(cloud_error)
-        else:
+            ok = True
+        elif cloud.get("skipped") or not cloud_enabled:
+            status = "generated"
+            cloud_error = ""
             account_log(f"CPA 授权文件已生成: {cpa_path_value}")
+            if cloud.get("skipped") and cloud_enabled is False:
+                account_log("远程推送未开启，仅完成本地授权")
+            ok = True
+        else:
+            # Mint succeeded but remote push was required and failed
+            status = "generated"
+            cloud_error = f"远程推送失败: {cloud.get('error') or cloud}"
+            account_log(cloud_error)
+            ok = False
+
         execute_no_return(
             """
             UPDATE accounts
@@ -1438,7 +1483,6 @@ def run_account_cpa_export(account_id: int, *, manage_job: bool = True) -> bool:
                 record_domain_auth_success(email, log=account_log)
             except Exception as domain_exc:  # noqa: BLE001
                 account_log(f"域名成功统计异常: {domain_exc}")
-        ok = True
     except Exception as exc:
         append_account_cpa_log(account_id, f"CPA 授权失败: {exc}")
         execute_no_return(
@@ -1472,23 +1516,7 @@ def run_account_cpa_upload(account_id: int, *, manage_job: bool = True) -> bool:
 
         account_log(f"开始推送 CPA 授权文件: {cpa_path.name}")
         cpa_export = load_cpa_export_module()
-        account_cpa_config = normalize_console_cpa_paths(merged_defaults())
-        account_cpa_config["cpa_cloud_upload_enabled"] = True
-        account_cpa_config["cpa_health_check_before_upload"] = bool(
-            account_cpa_config.get("cpa_health_check_before_upload", True)
-        )
-        account_cpa_config["cpa_health_check_timeout"] = _as_nonneg_int(
-            account_cpa_config.get("cpa_health_check_timeout"), 15, maximum=120
-        )
-        account_cpa_config["cpa_health_check_model"] = str(
-            account_cpa_config.get("cpa_health_check_model") or "grok-4.5"
-        )
-        account_cpa_config["cpa_health_check_headers"] = _normalize_health_headers(
-            account_cpa_config.get("cpa_health_check_headers") or _default_health_headers_text()
-        )
-        account_cpa_config["cpa_health_check_use_file_headers"] = bool(
-            account_cpa_config.get("cpa_health_check_use_file_headers", True)
-        )
+        account_cpa_config = build_account_cpa_config(force_cloud_upload=True)
 
         result = cpa_export.upload_cpa_auth_to_cloud(cpa_path, account_cpa_config, account_log)
         if result.get("health_failed"):
@@ -1731,8 +1759,16 @@ def _process_one_cpa_job(account_id: int, mode: str) -> tuple[bool, str, str]:
         if ok:
             return True, email, ""
 
-        row2 = fetch_one("SELECT cpa_error FROM accounts WHERE id = ?", (account_id,))
+        row2 = fetch_one("SELECT cpa_status, cpa_error FROM accounts WHERE id = ?", (account_id,))
         last_error = str(row_get(row2, "cpa_error", "") or "failed") if row2 else "failed"
+        last_status = str(row_get(row2, "cpa_status", "") or "") if row2 else ""
+        # 测活失败/账号缺字段等无需无意义重试授权
+        permanent = last_status == "invalid" or any(
+            token in last_error
+            for token in ("测活失败", "health_check", "缺少邮箱", "缺少密码", "未找到已生成")
+        )
+        if permanent:
+            return False, email, last_error
         if attempt < attempts and not cpa_cancel_event.is_set():
             time.sleep(min(2 * attempt, 6))
 
@@ -1787,10 +1823,16 @@ def cpa_worker_loop() -> None:
                     _record_cpa_result(account_id, email, "cancelled", error or "cancelled")
                     cpa_queue_state["cancelled"] = int(cpa_queue_state.get("cancelled") or 0) + 1
                 elif ok:
-                    row3 = fetch_one("SELECT cpa_status FROM accounts WHERE id = ?", (account_id,))
+                    row3 = fetch_one("SELECT cpa_status, cpa_error FROM accounts WHERE id = ?", (account_id,))
                     status = str(row_get(row3, "cpa_status", "generated") or "generated") if row3 else "generated"
-                    _record_cpa_result(account_id, email, status, "")
-                    cpa_queue_state["success"] = int(cpa_queue_state.get("success") or 0) + 1
+                    err = str(row_get(row3, "cpa_error", "") or "") if row3 else ""
+                    # Defensive: generated+error should not be counted as queue success
+                    if status == "generated" and err:
+                        _record_cpa_result(account_id, email, status, err)
+                        cpa_queue_state["failed"] = int(cpa_queue_state.get("failed") or 0) + 1
+                    else:
+                        _record_cpa_result(account_id, email, status, "")
+                        cpa_queue_state["success"] = int(cpa_queue_state.get("success") or 0) + 1
                 else:
                     row3 = fetch_one("SELECT cpa_status, cpa_error FROM accounts WHERE id = ?", (account_id,))
                     status = str(row_get(row3, "cpa_status", "failed") or "failed") if row3 else "failed"

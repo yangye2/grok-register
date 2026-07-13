@@ -609,11 +609,79 @@
     URL.revokeObjectURL(url);
   }
 
+  function formatApiErrorDetail(detail, status, rawText) {
+    if (detail == null || detail === "") {
+      const body = String(rawText || "").trim();
+      if (!body) return status ? `请求失败 (HTTP ${status})` : "请求失败";
+      const lower = body.slice(0, 200).toLowerCase();
+      if (
+        lower.includes("<!doctype") ||
+        lower.startsWith("<html") ||
+        lower.includes("<html") ||
+        body.trimStart().startsWith("<")
+      ) {
+        return `服务返回了 HTML/XML 而非 JSON（HTTP ${status || "?"}）。请检查 Console 地址、反代配置，或远程 CPA 管理地址是否写错。`;
+      }
+      return body.slice(0, 240);
+    }
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      return detail
+        .map((item) => {
+          if (typeof item === "string") return item;
+          if (item && typeof item === "object") {
+            const loc = Array.isArray(item.loc) ? item.loc.join(".") : "";
+            const msg = item.msg || item.message || JSON.stringify(item);
+            return loc ? `${loc}: ${msg}` : String(msg);
+          }
+          return String(item);
+        })
+        .filter(Boolean)
+        .join("; ") || `请求失败 (HTTP ${status || "?"})`;
+    }
+    if (typeof detail === "object") {
+      return detail.message || detail.error || detail.msg || JSON.stringify(detail);
+    }
+    return String(detail);
+  }
+
   async function fetchJson(url, options) {
     const response = await fetch(url, options);
-    const data = await response.json();
+    const rawText = await response.text();
+    const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+    let data = null;
+    const trimmed = String(rawText || "").trim();
+    if (trimmed) {
+      const looksJson =
+        contentType.includes("application/json") ||
+        contentType.includes("+json") ||
+        trimmed.startsWith("{") ||
+        trimmed.startsWith("[");
+      if (looksJson) {
+        try {
+          data = JSON.parse(trimmed);
+        } catch (parseError) {
+          if (!response.ok) {
+            throw new Error(formatApiErrorDetail(null, response.status, trimmed));
+          }
+          throw new Error(
+            `响应不是合法 JSON（HTTP ${response.status}）：${String(parseError.message || parseError).slice(0, 160)}`
+          );
+        }
+      } else if (!response.ok) {
+        throw new Error(formatApiErrorDetail(null, response.status, trimmed));
+      } else {
+        throw new Error(
+          `期望 JSON 响应，但收到 ${contentType || "未知类型"}（HTTP ${response.status}）`
+        );
+      }
+    } else if (!response.ok) {
+      throw new Error(formatApiErrorDetail(null, response.status, ""));
+    } else {
+      data = {};
+    }
     if (!response.ok) {
-      throw new Error(data.detail || "Request failed");
+      throw new Error(formatApiErrorDetail(data && data.detail, response.status, rawText));
     }
     return data;
   }
