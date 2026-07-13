@@ -90,6 +90,52 @@ def _import_cpa_health_check():
 
 
 
+
+
+def _import_cpa_to_sub2api():
+    """Load cpa_to_sub2api from worker dir / workspace."""
+    try:
+        import cpa_to_sub2api  # type: ignore
+        return cpa_to_sub2api
+    except Exception:
+        pass
+    import importlib.util
+
+    candidates = [
+        _REG_DIR / "cpa_to_sub2api.py",
+        Path(__file__).resolve().parent / "cpa_to_sub2api.py",
+    ]
+    env_src = str(os.environ.get("GROK_REGISTER_SOURCE_DIR") or "").strip()
+    if env_src:
+        root = Path(env_src).expanduser().resolve()
+        candidates.extend(
+            [
+                root / "apps" / "cpa-worker" / "cpa_to_sub2api.py",
+                root / "cpa_to_sub2api.py",
+            ]
+        )
+    here = Path(__file__).resolve().parent
+    candidates.append(here.parent / "cpa-worker" / "cpa_to_sub2api.py")
+    candidates.append(here.parent.parent / "apps" / "cpa-worker" / "cpa_to_sub2api.py")
+
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not path.is_file():
+            continue
+        if str(path.parent) not in sys.path:
+            sys.path.insert(0, str(path.parent))
+        spec = importlib.util.spec_from_file_location("cpa_to_sub2api_mod", path)
+        if spec is None or spec.loader is None:
+            continue
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    raise ImportError("cannot import cpa_to_sub2api")
+
 def health_check_cpa_auth_before_upload(
     path_value: str | Path | None,
     config: dict,
@@ -461,11 +507,13 @@ def export_cpa_xai_for_account(
         result["cloud_cpa_upload"] = upload_cpa_auth_to_cloud(
             result.get("cpa_path") or result["path"], cfg, log
         )
-    if result.get("ok") and result.get("path") and cfg.get("sub2api_export_enabled", True):
+    if result.get("ok") and result.get("path") and (
+        bool(cfg.get("sub2api_upload_enabled", False))
+        or bool(cfg.get("sub2api_export_enabled", False))
+    ):
         try:
-            import cpa_to_sub2api
-
-            sub_res = cpa_to_sub2api.export_after_cpa_result(
+            sub_mod = _import_cpa_to_sub2api()
+            sub_res = sub_mod.export_after_cpa_result(
                 result,
                 config=cfg,
                 log_callback=log,

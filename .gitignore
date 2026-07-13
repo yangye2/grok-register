@@ -12,3 +12,4 @@ node_modules/
 .idea/
 CLAUDE.md
 /apps/console/app.py.bak_cpa
+/open-cpa

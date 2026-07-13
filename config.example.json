@@ -34,5 +34,20 @@
   ],
   "domain_auth_fail_threshold": 3,
   "domain_auth_fail_auto_remove": true,
-  "temp_mail_domains_removed": []
+  "temp_mail_domains_removed": [],
+  "sub2api_upload_enabled": false,
+  "sub2api_api_base": "",
+  "sub2api_api_key": "",
+  "sub2api_upload_timeout": 30,
+  "sub2api_upload_retries": 3,
+  "sub2api_platform": "openai",
+  "sub2api_account_type": "oauth",
+  "sub2api_account_concurrency": 10,
+  "sub2api_account_priority": 1,
+  "sub2api_account_load_factor": 10,
+  "sub2api_account_rate_multiplier": 1.0,
+  "sub2api_account_group_ids": "",
+  "sub2api_default_proxy": "",
+  "sub2api_local_export": true,
+  "sub2api_local_export_dir": "./sub2api_exports"
 }

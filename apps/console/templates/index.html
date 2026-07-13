@@ -117,7 +117,8 @@
               <button id="accountsRefreshBtn" class="button button-secondary" type="button">刷新 SSO</button>
               <button id="accountsSelectFilteredBtn" class="button button-secondary" type="button">全选筛选结果</button>
               <button id="accountsCpaBatchBtn" class="button" type="button" disabled>批量授权并推送</button>
-              <button id="accountsCpaPushBatchBtn" class="button button-secondary" type="button" disabled>批量推送</button>
+              <button id="accountsCpaPushBatchBtn" class="button button-secondary" type="button" disabled>批量推送 CPA</button>
+            <button id="accountsSub2apiPushBatchBtn" class="button button-secondary" type="button" disabled>批量推送 Sub2API</button>
               <button id="accountsCpaCancelBtn" class="button button-danger" type="button" disabled>停止队列</button>
               <button id="accountsCpaExportBtn" class="button button-secondary" type="button" disabled>导出结果</button>
               <button id="accountsDownloadBtn" class="button" type="button">批量下载</button>
@@ -321,6 +322,62 @@
             <label>
               <span>合并授权文件 headers</span>
               <input name="cpa_health_check_use_file_headers" type="checkbox" title="是否合并 CPA 授权 JSON 内的 headers 字段（默认开启）">
+            </label>
+            <label>
+              <span>推送 Sub2API（远程）</span>
+              <input name="sub2api_upload_enabled" type="checkbox" title="授权成功后推送到 Sub2API">
+            </label>
+            <label>
+              <span>Sub2API 本地导出</span>
+              <input name="sub2api_export_enabled" type="checkbox" title="导出 Sub2API 格式 JSON 到本地目录">
+            </label>
+            <label>
+              <span>Sub2API 地址</span>
+              <input name="sub2api_api_base" placeholder="https://sub2api.example.com">
+            </label>
+            <label>
+              <span>Sub2API API Key</span>
+              <input name="sub2api_api_key" type="password" autocomplete="off" placeholder="x-api-key">
+            </label>
+            <label>
+              <span>Sub2API 超时（秒）</span>
+              <input name="sub2api_upload_timeout" type="number" min="5" max="180">
+            </label>
+            <label>
+              <span>Sub2API 重试次数</span>
+              <input name="sub2api_upload_retries" type="number" min="1" max="10">
+            </label>
+            <label>
+              <span>Sub2API platform</span>
+              <input name="sub2api_platform" placeholder="openai">
+            </label>
+            <label>
+              <span>Sub2API 账号类型</span>
+              <input name="sub2api_account_type" placeholder="oauth | apikey | upstream" title="oauth=刷新型; apikey=把 access_token 当 key">
+            </label>
+            <label>
+              <span>Sub2API concurrency</span>
+              <input name="sub2api_account_concurrency" type="number" min="1" max="200">
+            </label>
+            <label>
+              <span>Sub2API priority</span>
+              <input name="sub2api_account_priority" type="number" min="0" max="1000">
+            </label>
+            <label>
+              <span>Sub2API group_ids</span>
+              <input name="sub2api_account_group_ids" placeholder="1,2,3" title="逗号分隔分组 ID">
+            </label>
+            <label>
+              <span>Sub2API 默认代理</span>
+              <input name="sub2api_default_proxy" placeholder="http://user:pass@host:port">
+            </label>
+            <label>
+              <span>Sub2API 本地导出目录</span>
+              <input name="sub2api_local_export_dir" placeholder="./sub2api_exports">
+            </label>
+            <label>
+              <span>导出时写本地文件</span>
+              <input name="sub2api_local_export" type="checkbox" title="开启本地导出时是否写文件">
             </label>
             <div class="form-actions full">
               <button class="button" type="submit">保存默认配置</button>

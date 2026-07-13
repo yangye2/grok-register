@@ -44,6 +44,7 @@
   const accountsDeleteBtnEl = document.getElementById("accountsDeleteBtn");
   const accountsCpaBatchBtnEl = document.getElementById("accountsCpaBatchBtn");
   const accountsCpaPushBatchBtnEl = document.getElementById("accountsCpaPushBatchBtn");
+  const accountsSub2apiPushBatchBtnEl = document.getElementById("accountsSub2apiPushBatchBtn");
   const accountsCpaCancelBtnEl = document.getElementById("accountsCpaCancelBtn");
   const accountsCpaExportBtnEl = document.getElementById("accountsCpaExportBtn");
   const accountsSelectFilteredBtnEl = document.getElementById("accountsSelectFilteredBtn");
@@ -135,6 +136,48 @@
     }
     if (settingsFormEl.elements.cpa_health_check_use_file_headers) {
       settingsFormEl.elements.cpa_health_check_use_file_headers.checked = defaults.cpa_health_check_use_file_headers !== false;
+    }
+    if (settingsFormEl.elements.sub2api_upload_enabled) {
+      settingsFormEl.elements.sub2api_upload_enabled.checked = Boolean(defaults.sub2api_upload_enabled);
+    }
+    if (settingsFormEl.elements.sub2api_export_enabled) {
+      settingsFormEl.elements.sub2api_export_enabled.checked = Boolean(defaults.sub2api_export_enabled);
+    }
+    if (settingsFormEl.elements.sub2api_api_base) {
+      settingsFormEl.elements.sub2api_api_base.value = defaults.sub2api_api_base || "";
+    }
+    if (settingsFormEl.elements.sub2api_api_key) {
+      settingsFormEl.elements.sub2api_api_key.value = "";
+    }
+    if (settingsFormEl.elements.sub2api_upload_timeout) {
+      settingsFormEl.elements.sub2api_upload_timeout.value = defaults.sub2api_upload_timeout || 30;
+    }
+    if (settingsFormEl.elements.sub2api_upload_retries) {
+      settingsFormEl.elements.sub2api_upload_retries.value = defaults.sub2api_upload_retries || 3;
+    }
+    if (settingsFormEl.elements.sub2api_platform) {
+      settingsFormEl.elements.sub2api_platform.value = defaults.sub2api_platform || "openai";
+    }
+    if (settingsFormEl.elements.sub2api_account_type) {
+      settingsFormEl.elements.sub2api_account_type.value = defaults.sub2api_account_type || "oauth";
+    }
+    if (settingsFormEl.elements.sub2api_account_concurrency) {
+      settingsFormEl.elements.sub2api_account_concurrency.value = defaults.sub2api_account_concurrency ?? 10;
+    }
+    if (settingsFormEl.elements.sub2api_account_priority) {
+      settingsFormEl.elements.sub2api_account_priority.value = defaults.sub2api_account_priority ?? 1;
+    }
+    if (settingsFormEl.elements.sub2api_account_group_ids) {
+      settingsFormEl.elements.sub2api_account_group_ids.value = defaults.sub2api_account_group_ids || "";
+    }
+    if (settingsFormEl.elements.sub2api_default_proxy) {
+      settingsFormEl.elements.sub2api_default_proxy.value = defaults.sub2api_default_proxy || "";
+    }
+    if (settingsFormEl.elements.sub2api_local_export_dir) {
+      settingsFormEl.elements.sub2api_local_export_dir.value = defaults.sub2api_local_export_dir || "./sub2api_exports";
+    }
+    if (settingsFormEl.elements.sub2api_local_export) {
+      settingsFormEl.elements.sub2api_local_export.checked = defaults.sub2api_local_export !== false;
     }
   }
 
@@ -427,6 +470,7 @@
     accountsDeleteBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsCpaBatchBtnEl) accountsCpaBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsCpaPushBatchBtnEl) accountsCpaPushBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
+    if (accountsSub2apiPushBatchBtnEl) accountsSub2apiPushBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
     const pageIds = state.accounts.map((account) => account.id);
     const pageSelectedCount = pageIds.filter((id) => state.selectedAccountIds.has(id)).length;
     accountsSelectAllEl.checked = pageIds.length > 0 && pageSelectedCount === pageIds.length;
@@ -464,7 +508,8 @@
         <td class="account-actions">
           <button class="button button-small" type="button" data-download-account-id="${account.id}">下载</button>
           <button class="button button-secondary button-small" type="button" data-cpa-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>授权并推送</button>
-          ${canPushExistingCpa(account) ? `<button class="button button-secondary button-small" type="button" data-cpa-upload-account-id="${account.id}">推送</button>` : ""}
+          ${canPushExistingCpa(account) ? `<button class="button button-secondary button-small" type="button" data-cpa-upload-account-id="${account.id}">推送CPA</button>` : ""}
+          ${canPushExistingCpa(account) ? `<button class="button button-secondary button-small" type="button" data-sub2api-upload-account-id="${account.id}">推Sub2API</button>` : ""}
           <button class="button button-secondary button-small" type="button" data-cpa-log-account-id="${account.id}">日志</button>
           <button class="button button-danger button-small" type="button" data-delete-account-id="${account.id}">删除</button>
         </td>
@@ -547,6 +592,30 @@
           await refreshCpaQueue();
         } catch (error) {
           accountsMetaEl.textContent = `CPA 推送启动失败: ${error.message}`;
+          button.disabled = false;
+        }
+      });
+    });
+
+    accountsTableBodyEl.querySelectorAll("[data-sub2api-upload-account-id]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const account = state.accounts.find((item) => item.id === Number(button.dataset.sub2apiUploadAccountId));
+        if (!account) return;
+        const confirmed = window.confirm(`确认将账号 ${account.email} 已生成的 CPA 授权推送到 Sub2API 吗？`);
+        if (!confirmed) return;
+        button.disabled = true;
+        try {
+          const upload = await fetchJson(`/api/accounts/${account.id}/cpa/sub2api`, { method: "POST" });
+          state.cpaLogAccountId = account.id;
+          if (upload.queue) {
+            state.cpaQueue = upload.queue;
+            renderCpaQueuePanel();
+          }
+          accountsMetaEl.textContent = `账号 ${account.email} Sub2API 推送已加入全局队列`;
+          await refreshAccounts();
+          await refreshCpaQueue();
+        } catch (error) {
+          accountsMetaEl.textContent = `Sub2API 推送启动失败: ${error.message}`;
           button.disabled = false;
         }
       });
@@ -876,7 +945,11 @@
       accountsMetaEl.textContent = "请先选择账号";
       return;
     }
-    const modeLabel = mode === "push_only" ? "批量推送已生成的 CPA 授权" : "批量授权并推送 CPA";
+    const modeLabel = mode === "push_only"
+      ? "批量推送已生成的 CPA 授权"
+      : mode === "push_sub2api"
+        ? "批量推送已生成的授权到 Sub2API"
+        : "批量授权并推送 CPA";
     const confirmed = window.confirm(
       `确认对选中的 ${ids.length} 个账号执行「${modeLabel}」吗？\n全局单队列：一个线程 + 一个浏览器串行处理。`
     );
@@ -884,6 +957,7 @@
 
     if (accountsCpaBatchBtnEl) accountsCpaBatchBtnEl.disabled = true;
     if (accountsCpaPushBatchBtnEl) accountsCpaPushBatchBtnEl.disabled = true;
+    if (accountsSub2apiPushBatchBtnEl) accountsSub2apiPushBatchBtnEl.disabled = true;
     try {
       const result = await fetchJson("/api/accounts/cpa/batch", {
         method: "POST",
@@ -919,6 +993,7 @@
     } finally {
       if (accountsCpaBatchBtnEl) accountsCpaBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
       if (accountsCpaPushBatchBtnEl) accountsCpaPushBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
+      if (accountsSub2apiPushBatchBtnEl) accountsSub2apiPushBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
     }
   }
 
@@ -927,6 +1002,9 @@
   }
   if (accountsCpaPushBatchBtnEl) {
     accountsCpaPushBatchBtnEl.addEventListener("click", () => startBatchCpa("push_only"));
+  }
+  if (accountsSub2apiPushBatchBtnEl) {
+    accountsSub2apiPushBatchBtnEl.addEventListener("click", () => startBatchCpa("push_sub2api"));
   }
   if (accountsCpaCancelBtnEl) {
     accountsCpaCancelBtnEl.addEventListener("click", async () => {
@@ -1085,9 +1163,24 @@
       cpa_health_check_model: String(settingsFormEl.elements.cpa_health_check_model?.value || "grok-4.5").trim() || "grok-4.5",
       cpa_health_check_headers: String(settingsFormEl.elements.cpa_health_check_headers?.value || "").trim(),
       cpa_health_check_use_file_headers: Boolean(settingsFormEl.elements.cpa_health_check_use_file_headers?.checked),
+      sub2api_upload_enabled: Boolean(settingsFormEl.elements.sub2api_upload_enabled?.checked),
+      sub2api_export_enabled: Boolean(settingsFormEl.elements.sub2api_export_enabled?.checked),
+      sub2api_api_base: String(settingsFormEl.elements.sub2api_api_base?.value || "").trim(),
+      sub2api_upload_timeout: Number(settingsFormEl.elements.sub2api_upload_timeout?.value) || 30,
+      sub2api_upload_retries: Number(settingsFormEl.elements.sub2api_upload_retries?.value) || 3,
+      sub2api_platform: String(settingsFormEl.elements.sub2api_platform?.value || "openai").trim() || "openai",
+      sub2api_account_type: String(settingsFormEl.elements.sub2api_account_type?.value || "oauth").trim() || "oauth",
+      sub2api_account_concurrency: Number(settingsFormEl.elements.sub2api_account_concurrency?.value ?? 10) || 10,
+      sub2api_account_priority: Number(settingsFormEl.elements.sub2api_account_priority?.value ?? 1),
+      sub2api_account_group_ids: String(settingsFormEl.elements.sub2api_account_group_ids?.value || "").trim(),
+      sub2api_default_proxy: String(settingsFormEl.elements.sub2api_default_proxy?.value || "").trim(),
+      sub2api_local_export: Boolean(settingsFormEl.elements.sub2api_local_export?.checked),
+      sub2api_local_export_dir: String(settingsFormEl.elements.sub2api_local_export_dir?.value || "./sub2api_exports").trim() || "./sub2api_exports",
     };
     const managementKey = settingsFormEl.elements.cpa_cloud_management_key.value.trim();
     if (managementKey) payload.cpa_cloud_management_key = managementKey;
+    const sub2Key = String(settingsFormEl.elements.sub2api_api_key?.value || "").trim();
+    if (sub2Key) payload.sub2api_api_key = sub2Key;
     try {
       const data = await fetchJson("/api/settings", {
         method: "POST",

@@ -57,7 +57,7 @@ SUPERVISOR_INTERVAL = max(1.0, float(os.getenv("GROK_REGISTER_CONSOLE_POLL_INTER
 
 REGISTER_RUNNER_DIR = SOURCE_PROJECT / "apps" / "register-runner"
 CPA_WORKER_DIR = SOURCE_PROJECT / "apps" / "cpa-worker"
-PROJECT_FILES = ("DrissionPage_example.py", "email_register.py", "cpa_export.py")
+PROJECT_FILES = ("DrissionPage_example.py", "email_register.py", "cpa_export.py", "cpa_to_sub2api.py")
 PROJECT_DIRS = ("turnstilePatch", "cpa_xai", "health_check")
 
 
@@ -77,6 +77,7 @@ def missing_source_items() -> list[str]:
         REGISTER_RUNNER_DIR / "DrissionPage_example.py",
         REGISTER_RUNNER_DIR / "email_register.py",
         CPA_WORKER_DIR / "cpa_export.py",
+        CPA_WORKER_DIR / "cpa_to_sub2api.py",
         CPA_WORKER_DIR / "cpa_xai" / "__init__.py",
         CPA_WORKER_DIR / "health_check" / "health_check.py",
         SOURCE_PROJECT / "turnstilePatch" / "manifest.json",
@@ -98,7 +99,7 @@ LINE_RE_TEMP_EMAIL = re.compile(r"临时邮箱创建成功:\s*([^\s]+)")
 LINE_RE_FILLED_EMAIL = re.compile(r"已填写邮箱并点击注册:\s*([^\s]+)")
 
 db_lock = threading.RLock()
-cpa_jobs_lock = threading.Lock()
+cpa_jobs_lock = threading.RLock()
 cpa_jobs: dict[int, threading.Thread] = {}  # busy marker; shared worker thread
 cpa_work_queue: queue.Queue[dict[str, Any]] = queue.Queue()
 cpa_worker_thread: threading.Thread | None = None
@@ -296,6 +297,14 @@ def load_source_defaults() -> dict[str, Any]:
         "cpa_proxy": "GROK_REGISTER_DEFAULT_CPA_PROXY",
         "cpa_cloud_api_base": "CPA_CLOUD_API_BASE",
         "cpa_cloud_management_key": "CPA_CLOUD_MANAGEMENT_KEY",
+        "sub2api_api_base": "SUB2API_API_BASE",
+        "sub2api_url": "SUB2API_URL",
+        "sub2api_api_key": "SUB2API_API_KEY",
+        "sub2api_platform": "SUB2API_PLATFORM",
+        "sub2api_account_type": "SUB2API_ACCOUNT_TYPE",
+        "sub2api_account_group_ids": "SUB2API_ACCOUNT_GROUP_IDS",
+        "sub2api_default_proxy": "SUB2API_DEFAULT_PROXY",
+        "sub2api_local_export_dir": "SUB2API_LOCAL_EXPORT_DIR",
     }
     for key, env_name in string_env_map.items():
         value = os.getenv(env_name)
@@ -307,6 +316,9 @@ def load_source_defaults() -> dict[str, Any]:
         "cpa_copy_to_hotload": "GROK_REGISTER_DEFAULT_CPA_COPY_TO_HOTLOAD",
         "cpa_headless": "GROK_REGISTER_DEFAULT_CPA_HEADLESS",
         "cpa_cloud_upload_enabled": "CPA_CLOUD_UPLOAD_ENABLED",
+        "sub2api_upload_enabled": "SUB2API_UPLOAD_ENABLED",
+        "sub2api_export_enabled": "SUB2API_EXPORT_ENABLED",
+        "sub2api_local_export": "SUB2API_LOCAL_EXPORT",
     }
     for key, env_name in bool_env_map.items():
         value = os.getenv(env_name)
@@ -317,6 +329,11 @@ def load_source_defaults() -> dict[str, Any]:
         "cpa_mint_timeout_sec": "GROK_REGISTER_DEFAULT_CPA_MINT_TIMEOUT_SEC",
         "cpa_cloud_upload_timeout": "CPA_CLOUD_UPLOAD_TIMEOUT",
         "cpa_cloud_upload_retries": "CPA_CLOUD_UPLOAD_RETRIES",
+        "sub2api_upload_timeout": "SUB2API_UPLOAD_TIMEOUT",
+        "sub2api_upload_retries": "SUB2API_UPLOAD_RETRIES",
+        "sub2api_account_concurrency": "SUB2API_ACCOUNT_CONCURRENCY",
+        "sub2api_account_priority": "SUB2API_ACCOUNT_PRIORITY",
+        "sub2api_account_load_factor": "SUB2API_ACCOUNT_LOAD_FACTOR",
     }
     for key, env_name in int_env_map.items():
         value = os.getenv(env_name)
@@ -921,6 +938,22 @@ class SystemSettings(BaseModel):
         "User-Agent: grok-shell/0.2.93 (linux; x86_64)"
     )
     cpa_health_check_use_file_headers: bool = True
+    sub2api_upload_enabled: bool = False
+    sub2api_export_enabled: bool = False
+    sub2api_api_base: str = ""
+    sub2api_api_key: str | None = None
+    sub2api_upload_timeout: int = Field(default=30, ge=5, le=180)
+    sub2api_upload_retries: int = Field(default=3, ge=1, le=10)
+    sub2api_platform: str = "openai"
+    sub2api_account_type: str = "oauth"
+    sub2api_account_concurrency: int = Field(default=10, ge=1, le=200)
+    sub2api_account_priority: int = Field(default=1, ge=0, le=1000)
+    sub2api_account_load_factor: int = Field(default=10, ge=1, le=10000)
+    sub2api_account_rate_multiplier: float = Field(default=1.0, ge=0.0)
+    sub2api_account_group_ids: str = ""
+    sub2api_default_proxy: str = ""
+    sub2api_local_export: bool = True
+    sub2api_local_export_dir: str = "./sub2api_exports"
 
 
 @dataclass
@@ -945,6 +978,8 @@ def write_settings(settings: SystemSettings) -> dict[str, Any]:
     data = settings.model_dump()
     if data["cpa_cloud_management_key"] is None:
         data["cpa_cloud_management_key"] = str(read_settings().get("cpa_cloud_management_key") or "")
+    if data.get("sub2api_api_key") is None:
+        data["sub2api_api_key"] = str(read_settings().get("sub2api_api_key") or "")
     data = _normalize_domain_pool_settings(data)
     # Re-activate domains that user put back into the active pool
     active_set = set(_parse_domain_list_value(data.get("temp_mail_domain")))
@@ -974,6 +1009,7 @@ def write_settings(settings: SystemSettings) -> dict[str, Any]:
 def public_defaults() -> dict[str, Any]:
     defaults = merged_defaults()
     defaults.pop("cpa_cloud_management_key", None)
+    defaults.pop("sub2api_api_key", None)
     return defaults
 
 
@@ -1001,7 +1037,13 @@ def merged_defaults() -> dict[str, Any]:
                 "cpa_cloud_api_base", "cpa_cloud_management_key", "cpa_cloud_upload_timeout",
                 "cpa_cloud_upload_retries", "cpa_batch_retry_count", "cpa_mint_browser_recycle_every",
                 "cpa_health_check_before_upload", "cpa_health_check_timeout", "cpa_health_check_model",
-                "cpa_health_check_headers", "cpa_health_check_use_file_headers"):
+                "cpa_health_check_headers", "cpa_health_check_use_file_headers",
+                "sub2api_upload_enabled", "sub2api_export_enabled", "sub2api_api_base",
+                "sub2api_api_key", "sub2api_upload_timeout", "sub2api_upload_retries",
+                "sub2api_platform", "sub2api_account_type", "sub2api_account_concurrency",
+                "sub2api_account_priority", "sub2api_account_load_factor",
+                "sub2api_account_rate_multiplier", "sub2api_account_group_ids",
+                "sub2api_default_proxy", "sub2api_local_export", "sub2api_local_export_dir"):
         if key in saved:
             base[key] = saved[key]
     base.pop("api", None)
@@ -1027,6 +1069,43 @@ def merged_defaults() -> dict[str, Any]:
         base["cpa_health_check_use_file_headers"] = True
     else:
         base["cpa_health_check_use_file_headers"] = bool(base.get("cpa_health_check_use_file_headers"))
+    if "sub2api_upload_enabled" not in base:
+        base["sub2api_upload_enabled"] = False
+    else:
+        base["sub2api_upload_enabled"] = bool(base.get("sub2api_upload_enabled"))
+    if "sub2api_export_enabled" not in base:
+        base["sub2api_export_enabled"] = False
+    else:
+        base["sub2api_export_enabled"] = bool(base.get("sub2api_export_enabled"))
+    base["sub2api_api_base"] = str(base.get("sub2api_api_base") or base.get("sub2api_url") or "").strip()
+    base["sub2api_upload_timeout"] = _as_nonneg_int(base.get("sub2api_upload_timeout"), 30, maximum=180)
+    if base["sub2api_upload_timeout"] < 5:
+        base["sub2api_upload_timeout"] = 5
+    base["sub2api_upload_retries"] = _as_nonneg_int(base.get("sub2api_upload_retries"), 3, maximum=10)
+    if base["sub2api_upload_retries"] < 1:
+        base["sub2api_upload_retries"] = 1
+    base["sub2api_platform"] = str(base.get("sub2api_platform") or "openai").strip() or "openai"
+    acct_type = str(base.get("sub2api_account_type") or "oauth").strip().lower() or "oauth"
+    if acct_type not in {"oauth", "apikey", "upstream"}:
+        acct_type = "oauth"
+    base["sub2api_account_type"] = acct_type
+    base["sub2api_account_concurrency"] = _as_nonneg_int(base.get("sub2api_account_concurrency"), 10, maximum=200) or 10
+    base["sub2api_account_priority"] = _as_nonneg_int(base.get("sub2api_account_priority"), 1, maximum=1000)
+    base["sub2api_account_load_factor"] = _as_nonneg_int(base.get("sub2api_account_load_factor"), 10, maximum=10000) or 10
+    try:
+        rate = float(base.get("sub2api_account_rate_multiplier", 1.0) or 1.0)
+    except (TypeError, ValueError):
+        rate = 1.0
+    if rate < 0:
+        rate = 0.0
+    base["sub2api_account_rate_multiplier"] = rate
+    base["sub2api_account_group_ids"] = str(base.get("sub2api_account_group_ids") or "").strip()
+    base["sub2api_default_proxy"] = str(base.get("sub2api_default_proxy") or "").strip()
+    if "sub2api_local_export" not in base:
+        base["sub2api_local_export"] = True
+    else:
+        base["sub2api_local_export"] = bool(base.get("sub2api_local_export"))
+    base["sub2api_local_export_dir"] = str(base.get("sub2api_local_export_dir") or "./sub2api_exports").strip() or "./sub2api_exports"
     base = _normalize_domain_pool_settings(base)
     return base
 
@@ -1067,7 +1146,21 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
         "cpa_cloud_api_base": defaults.get("cpa_cloud_api_base", ""),
         "cpa_cloud_upload_timeout": defaults.get("cpa_cloud_upload_timeout", 30),
         "cpa_cloud_upload_retries": defaults.get("cpa_cloud_upload_retries", 3),
-        "sub2api_export_enabled": False,
+        "sub2api_upload_enabled": bool(defaults.get("sub2api_upload_enabled", False)),
+        "sub2api_export_enabled": bool(defaults.get("sub2api_export_enabled", False)),
+        "sub2api_api_base": str(defaults.get("sub2api_api_base") or ""),
+        "sub2api_upload_timeout": defaults.get("sub2api_upload_timeout", 30),
+        "sub2api_upload_retries": defaults.get("sub2api_upload_retries", 3),
+        "sub2api_platform": str(defaults.get("sub2api_platform") or "openai"),
+        "sub2api_account_type": str(defaults.get("sub2api_account_type") or "oauth"),
+        "sub2api_account_concurrency": defaults.get("sub2api_account_concurrency", 10),
+        "sub2api_account_priority": defaults.get("sub2api_account_priority", 1),
+        "sub2api_account_load_factor": defaults.get("sub2api_account_load_factor", 10),
+        "sub2api_account_rate_multiplier": defaults.get("sub2api_account_rate_multiplier", 1.0),
+        "sub2api_account_group_ids": str(defaults.get("sub2api_account_group_ids") or ""),
+        "sub2api_default_proxy": str(defaults.get("sub2api_default_proxy") or ""),
+        "sub2api_local_export": bool(defaults.get("sub2api_local_export", True)),
+        "sub2api_local_export_dir": str(defaults.get("sub2api_local_export_dir") or "./sub2api_exports"),
     }
 
 
@@ -1321,6 +1414,25 @@ def build_account_cpa_config(*, force_cloud_upload: bool = False) -> dict[str, A
         ).strip()
         if fallback_proxy:
             account_cpa_config["cpa_proxy"] = fallback_proxy
+
+    sub2api_key = str(
+        saved.get("sub2api_api_key")
+        or account_cpa_config.get("sub2api_api_key")
+        or os.environ.get("SUB2API_API_KEY")
+        or os.environ.get("SUB2API_KEY")
+        or ""
+    ).strip()
+    if sub2api_key:
+        account_cpa_config["sub2api_api_key"] = sub2api_key
+    account_cpa_config["sub2api_api_base"] = str(
+        account_cpa_config.get("sub2api_api_base")
+        or account_cpa_config.get("sub2api_url")
+        or os.environ.get("SUB2API_API_BASE")
+        or os.environ.get("SUB2API_URL")
+        or ""
+    ).strip()
+    account_cpa_config["sub2api_upload_enabled"] = bool(account_cpa_config.get("sub2api_upload_enabled", False))
+    account_cpa_config["sub2api_export_enabled"] = bool(account_cpa_config.get("sub2api_export_enabled", False))
     return account_cpa_config
 
 
@@ -1444,24 +1556,57 @@ def run_account_cpa_export(account_id: int, *, manage_job: bool = True) -> bool:
             return ok
 
         cloud_enabled = bool(account_cpa_config.get("cpa_cloud_upload_enabled", False))
+        sub2 = result.get("sub2api") or {}
+        if result.get("sub2api_error") and not sub2:
+            sub2 = {"ok": False, "error": result.get("sub2api_error")}
+        sub2_enabled = bool(
+            account_cpa_config.get("sub2api_upload_enabled", False)
+            or account_cpa_config.get("sub2api_export_enabled", False)
+        )
+        sub2_upload_enabled = bool(account_cpa_config.get("sub2api_upload_enabled", False))
+
+        errors: list[str] = []
+        any_remote_ok = False
+
         if cloud.get("ok"):
-            status = "uploaded"
-            cloud_error = ""
+            any_remote_ok = True
             account_log(f"CPA 授权文件已推送远程: {cpa_path_value}")
-            ok = True
-        elif cloud.get("skipped") or not cloud_enabled:
-            status = "generated"
-            cloud_error = ""
+        elif cloud_enabled and cloud and not cloud.get("skipped"):
+            err = f"CPA 远程推送失败: {cloud.get('error') or cloud}"
+            errors.append(err)
+            account_log(err)
+        else:
             account_log(f"CPA 授权文件已生成: {cpa_path_value}")
-            if cloud.get("skipped") and cloud_enabled is False:
-                account_log("远程推送未开启，仅完成本地授权")
+            if not cloud_enabled:
+                account_log("CPA 远程推送未开启")
+
+        if sub2.get("ok") and not sub2.get("skipped"):
+            any_remote_ok = True
+            account_log(f"Sub2API 推送成功: {sub2.get('message') or cpa_path_value}")
+        elif sub2.get("skipped"):
+            if sub2_enabled:
+                account_log(f"Sub2API 跳过: {sub2.get('reason') or 'skipped'}")
+        elif sub2_enabled:
+            err = f"Sub2API 推送失败: {sub2.get('error') or result.get('sub2api_error') or sub2 or 'unknown'}"
+            errors.append(err)
+            account_log(err)
+
+        remote_uploaded = bool(
+            cloud.get("ok")
+            or (sub2.get("ok") and sub2_upload_enabled and not sub2.get("skipped_upload"))
+        )
+        if remote_uploaded:
+            status = "uploaded"
+            ok = not errors
+        elif not cloud_enabled and not sub2_upload_enabled:
+            status = "generated"
             ok = True
         else:
-            # Mint succeeded but remote push was required and failed
             status = "generated"
-            cloud_error = f"远程推送失败: {cloud.get('error') or cloud}"
-            account_log(cloud_error)
-            ok = False
+            ok = not errors
+
+        cloud_error = "; ".join(errors)
+        uploaded_at = now_iso() if status == "uploaded" else ""
 
         execute_no_return(
             """
@@ -1472,13 +1617,13 @@ def run_account_cpa_export(account_id: int, *, manage_job: bool = True) -> bool:
             (
                 status,
                 cpa_path_value,
-                now_iso() if cloud.get("ok") else "",
+                uploaded_at,
                 cloud_error,
                 now_iso(),
                 account_id,
             ),
         )
-        if status == "uploaded":
+        if status == "uploaded" and not errors:
             try:
                 record_domain_auth_success(email, log=account_log)
             except Exception as domain_exc:  # noqa: BLE001
@@ -1605,6 +1750,109 @@ def run_account_cpa_upload(account_id: int, *, manage_job: bool = True) -> bool:
     return ok
 
 
+def run_account_sub2api_upload(account_id: int, *, manage_job: bool = True) -> bool:
+    """Upload an existing CPA auth file to Sub2API only."""
+    def account_log(message: str) -> None:
+        print(f"[account-sub2api:{account_id}] {message}", flush=True)
+        append_account_cpa_log(account_id, message)
+
+    cpa_path: Path | None = None
+    ok = False
+    try:
+        row = account_row(account_id)
+        email = str(row["email"] or "").strip()
+        cpa_path = resolve_account_cpa_path(row)
+        if not email:
+            raise ValueError("账号缺少邮箱，无法执行 Sub2API 推送")
+        if cpa_path is None:
+            raise ValueError("未找到已生成的 CPA 授权文件，请先生成授权")
+
+        account_log(f"开始推送 Sub2API: {cpa_path.name}")
+        cpa_export = load_cpa_export_module()
+        account_cpa_config = build_account_cpa_config(force_cloud_upload=False)
+        account_cpa_config["sub2api_upload_enabled"] = True
+
+        if bool(account_cpa_config.get("cpa_health_check_before_upload", True)):
+            health = cpa_export.health_check_cpa_auth_before_upload(
+                cpa_path, account_cpa_config, account_log
+            )
+            if not health.get("ok"):
+                error = str(health.get("error") or health.get("message") or "测活失败")
+                account_log(f"测活失败，已放弃 Sub2API 推送: {error}")
+                execute_no_return(
+                    """
+                    UPDATE accounts
+                    SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = ?, cpa_updated_at = ?
+                    WHERE id = ?
+                    """,
+                    ("invalid", str(cpa_path), "", error, now_iso(), account_id),
+                )
+                try:
+                    record_domain_auth_failure(email, error, log=account_log)
+                except Exception as domain_exc:  # noqa: BLE001
+                    account_log(f"域名失败统计异常: {domain_exc}")
+                return False
+
+        if str(CPA_WORKER_DIR) not in sys.path:
+            sys.path.insert(0, str(CPA_WORKER_DIR))
+        try:
+            import cpa_to_sub2api as sub_mod  # type: ignore
+        except Exception:
+            sub_mod = cpa_export._import_cpa_to_sub2api()  # type: ignore[attr-defined]
+
+        result = sub_mod.upload_cpa_auth_to_sub2api(cpa_path, account_cpa_config, account_log)
+        if result.get("ok"):
+            account_log(f"Sub2API 推送成功: {result.get('message') or cpa_path.name}")
+            execute_no_return(
+                """
+                UPDATE accounts
+                SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = ?, cpa_updated_at = ?
+                WHERE id = ?
+                """,
+                ("uploaded", str(cpa_path), now_iso(), "", now_iso(), account_id),
+            )
+            try:
+                record_domain_auth_success(email, log=account_log)
+            except Exception as domain_exc:  # noqa: BLE001
+                account_log(f"域名成功统计异常: {domain_exc}")
+            ok = True
+            return ok
+
+        if result.get("skipped"):
+            raise RuntimeError(str(result.get("reason") or "sub2api push skipped"))
+
+        error = str(result.get("error") or "sub2api upload failed")
+        account_log(f"Sub2API 推送失败: {error}")
+        execute_no_return(
+            """
+            UPDATE accounts
+            SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = ?, cpa_updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                "generated",
+                str(cpa_path),
+                str(row_get(row, "cpa_uploaded_at", "") or ""),
+                error,
+                now_iso(),
+                account_id,
+            ),
+        )
+    except Exception as exc:
+        append_account_cpa_log(account_id, f"Sub2API 推送失败: {exc}")
+        status = "generated" if cpa_path is not None else "failed"
+        execute_no_return(
+            "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
+            (status, str(exc), now_iso(), account_id),
+        )
+        ok = False
+    finally:
+        if manage_job:
+            with cpa_jobs_lock:
+                cpa_jobs.pop(account_id, None)
+    return ok
+
+
 def _cpa_queue_snapshot() -> dict[str, Any]:
     with cpa_jobs_lock:
         snap = deepcopy(cpa_queue_state)
@@ -1630,12 +1878,44 @@ def _validate_cpa_cloud_config(mode: str) -> str | None:
             return "未配置远程 CPA 管理密钥"
         return None
 
+    if mode == "push_sub2api":
+        return None
+
     # authorize_and_push: only require full cloud config when upload is enabled
     if enabled:
         if not api_base:
             return "已开启远程推送，但未配置远程 CPA 管理地址"
         if not management_key:
             return "已开启远程推送，但未配置远程 CPA 管理密钥"
+    return None
+
+
+def _validate_sub2api_config(mode: str) -> str | None:
+    """Return error when Sub2API config is incomplete for the given mode."""
+    settings = merged_defaults()
+    saved = read_settings()
+    upload_enabled = bool(settings.get("sub2api_upload_enabled"))
+    api_base = str(settings.get("sub2api_api_base") or settings.get("sub2api_url") or "").strip()
+    api_key = str(
+        saved.get("sub2api_api_key")
+        or settings.get("sub2api_api_key")
+        or os.environ.get("SUB2API_API_KEY")
+        or os.environ.get("SUB2API_KEY")
+        or ""
+    ).strip()
+
+    if mode == "push_sub2api":
+        if not api_base:
+            return "未配置 Sub2API 地址（sub2api_api_base）"
+        if not api_key:
+            return "未配置 Sub2API API Key（sub2api_api_key）"
+        return None
+
+    if upload_enabled:
+        if not api_base:
+            return "已开启 Sub2API 推送，但未配置 Sub2API 地址"
+        if not api_key:
+            return "已开启 Sub2API 推送，但未配置 Sub2API API Key"
     return None
 
 
@@ -1743,8 +2023,15 @@ def _process_one_cpa_job(account_id: int, mode: str) -> tuple[bool, str, str]:
                 "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
                 ("uploading", now_iso(), account_id),
             )
-            append_account_cpa_log(account_id, f"队列处理推送: {email or account_id}")
+            append_account_cpa_log(account_id, f"队列处理 CPA 推送: {email or account_id}")
             ok = run_account_cpa_upload(account_id, manage_job=False)
+        elif mode == "push_sub2api":
+            execute_no_return(
+                "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
+                ("uploading", now_iso(), account_id),
+            )
+            append_account_cpa_log(account_id, f"队列处理 Sub2API 推送: {email or account_id}")
+            ok = run_account_sub2api_upload(account_id, manage_job=False)
         else:
             execute_no_return(
                 "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
@@ -1874,24 +2161,32 @@ def cpa_worker_loop() -> None:
                 _finish_cpa_session_if_idle()
 
 
-def ensure_cpa_worker() -> None:
+def _ensure_cpa_worker_locked() -> None:
+    """Start the global CPA worker if needed. Caller must hold cpa_jobs_lock."""
     global cpa_worker_thread
+    if cpa_worker_thread is not None and cpa_worker_thread.is_alive():
+        return
+    cpa_worker_thread = threading.Thread(target=cpa_worker_loop, daemon=True, name="cpa-global-queue")
+    cpa_worker_thread.start()
+
+
+def ensure_cpa_worker() -> None:
     with cpa_jobs_lock:
-        if cpa_worker_thread is not None and cpa_worker_thread.is_alive():
-            return
-        cpa_worker_thread = threading.Thread(target=cpa_worker_loop, daemon=True, name="cpa-global-queue")
-        cpa_worker_thread.start()
+        _ensure_cpa_worker_locked()
 
 
 def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
     """Validate and enqueue accounts into the global sequential CPA queue."""
     mode = str(mode or "authorize_and_push").strip()
-    if mode not in {"authorize_and_push", "push_only"}:
-        raise HTTPException(status_code=400, detail="mode 仅支持 authorize_and_push 或 push_only")
+    if mode not in {"authorize_and_push", "push_only", "push_sub2api"}:
+        raise HTTPException(status_code=400, detail="mode 仅支持 authorize_and_push / push_only / push_sub2api")
 
     cloud_error = _validate_cpa_cloud_config(mode)
     if cloud_error:
         raise HTTPException(status_code=400, detail=cloud_error)
+    sub2_error = _validate_sub2api_config(mode)
+    if sub2_error:
+        raise HTTPException(status_code=400, detail=sub2_error)
 
     ordered_ids: list[int] = []
     seen: set[int] = set()
@@ -1913,7 +2208,7 @@ def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
             rejected.append({"id": account_id, "reason": "账号不存在"})
             continue
         email = str(row_get(row, "email", "") or "").strip()
-        if mode == "push_only":
+        if mode in {"push_only", "push_sub2api"}:
             if resolve_account_cpa_path(row) is None:
                 rejected.append({
                     "id": account_id,
@@ -1942,7 +2237,7 @@ def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
             to_start.append((account_id, email))
 
         if to_start:
-            ensure_cpa_worker()
+            _ensure_cpa_worker_locked()
             if not cpa_queue_state.get("active"):
                 cpa_cancel_event.clear()
                 cpa_queue_state.update({
@@ -2186,7 +2481,11 @@ def copy_source_to_task_dir(task_dir: Path, task_config: dict[str, Any]) -> None
 
     task_dir.mkdir(parents=True, exist_ok=True)
     for file_name in PROJECT_FILES:
-        source_dir = CPA_WORKER_DIR if file_name == "cpa_export.py" else REGISTER_RUNNER_DIR
+        source_dir = (
+            CPA_WORKER_DIR
+            if file_name in {"cpa_export.py", "cpa_to_sub2api.py"}
+            else REGISTER_RUNNER_DIR
+        )
         shutil.copy2(source_dir / file_name, task_dir / file_name)
     for dir_name in PROJECT_DIRS:
         if dir_name in {"cpa_xai", "health_check"}:
@@ -2295,6 +2594,9 @@ class TaskSupervisor:
         management_key = str(read_settings().get("cpa_cloud_management_key") or "").strip()
         if management_key:
             child_env["CPA_CLOUD_MANAGEMENT_KEY"] = management_key
+        sub2_key = str(read_settings().get("sub2api_api_key") or "").strip()
+        if sub2_key:
+            child_env["SUB2API_API_KEY"] = sub2_key
 
         output_path = task_dir / "sso" / f"task_{task_id}.txt"
         account_output_path = task_dir / "accounts" / f"task_{task_id}.jsonl"
@@ -2439,7 +2741,7 @@ def index(request: Request) -> HTMLResponse:
 def api_meta() -> dict[str, Any]:
     return {
         "defaults": public_defaults(),
-        "settings": {key: value for key, value in read_settings().items() if key != "cpa_cloud_management_key"},
+        "settings": {key: value for key, value in read_settings().items() if key not in {"cpa_cloud_management_key", "sub2api_api_key"}},
         "source_project": str(SOURCE_PROJECT),
         "python_path": resolve_source_python(),
         "configured_python_path": str(SOURCE_VENV_PYTHON),
@@ -2454,13 +2756,13 @@ def api_health() -> dict[str, Any]:
 
 @app.get("/api/settings")
 def get_settings() -> dict[str, Any]:
-    return {"settings": {key: value for key, value in read_settings().items() if key != "cpa_cloud_management_key"}, "defaults": public_defaults()}
+    return {"settings": {key: value for key, value in read_settings().items() if key not in {"cpa_cloud_management_key", "sub2api_api_key"}}, "defaults": public_defaults()}
 
 
 @app.post("/api/settings")
 def save_settings(payload: SystemSettings) -> dict[str, Any]:
     saved = write_settings(payload)
-    return {"settings": {key: value for key, value in saved.items() if key != "cpa_cloud_management_key"}, "defaults": public_defaults()}
+    return {"settings": {key: value for key, value in saved.items() if key not in {"cpa_cloud_management_key", "sub2api_api_key"}}, "defaults": public_defaults()}
 
 
 
@@ -2700,6 +3002,29 @@ def upload_existing_account_cpa(account_id: int) -> dict[str, Any]:
         reason = ""
         if result["skipped"]:
             reason = result["skipped"][0].get("reason") or "CPA 任务已在队列或执行中"
+        elif result["rejected"]:
+            reason = result["rejected"][0].get("reason") or "无法加入队列"
+        else:
+            reason = "无法加入队列"
+        raise HTTPException(status_code=409 if result["skipped"] else 400, detail=reason)
+    return {
+        "ok": True,
+        "status": "queued",
+        "account_id": account_id,
+        "queue": result.get("queue"),
+    }
+
+
+@app.post("/api/accounts/{account_id}/cpa/sub2api")
+def upload_existing_account_sub2api(account_id: int) -> dict[str, Any]:
+    row = account_row(account_id)
+    if resolve_account_cpa_path(row) is None:
+        raise HTTPException(status_code=400, detail="未找到已生成的 CPA 授权文件，请先生成授权")
+    result = enqueue_cpa_jobs([account_id], "push_sub2api")
+    if result["accepted_count"] == 0:
+        reason = ""
+        if result["skipped"]:
+            reason = result["skipped"][0].get("reason") or "Sub2API 任务已在队列或执行中"
         elif result["rejected"]:
             reason = result["rejected"][0].get("reason") or "无法加入队列"
         else:
