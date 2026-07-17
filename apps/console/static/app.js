@@ -140,14 +140,17 @@
     settingsFormEl.elements.cpa_proxy.value = defaults.cpa_proxy || "";
     settingsFormEl.elements.cpa_hotload_dir.value = defaults.cpa_hotload_dir || "";
     settingsFormEl.elements.cpa_mint_timeout_sec.value = defaults.cpa_mint_timeout_sec || 300;
-    if (settingsFormEl.elements.cpa_probe_delay_sec) {
-      settingsFormEl.elements.if (settingsFormEl.elements.cpa_prefer_sso_oauth) {
+    if (settingsFormEl.elements.cpa_prefer_sso_oauth) {
       settingsFormEl.elements.cpa_prefer_sso_oauth.checked = defaults.cpa_prefer_sso_oauth !== false;
     }
     if (settingsFormEl.elements.cpa_probe_after_write) {
       settingsFormEl.elements.cpa_probe_after_write.checked = defaults.cpa_probe_after_write !== false;
     }
-    cpa_probe_delay_sec.value = defaults.cpa_probe_delay_sec ?? 5;
+    if (settingsFormEl.elements.cpa_probe_delay_sec) {
+      settingsFormEl.elements.cpa_probe_delay_sec.value = defaults.cpa_probe_delay_sec ?? 5;
+    }
+    if (settingsFormEl.elements.cpa_probe_required) {
+      settingsFormEl.elements.cpa_probe_required.checked = Boolean(defaults.cpa_probe_required);
     }
     settingsFormEl.elements.cpa_export_enabled.checked = Boolean(defaults.cpa_export_enabled);
     settingsFormEl.elements.cpa_copy_to_hotload.checked = Boolean(defaults.cpa_copy_to_hotload);
