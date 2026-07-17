@@ -117,13 +117,16 @@ def create_standalone_page(
             "--window-size=1280,900",
         ):
             opts.set_argument(flag)
-        ext = str(_pkg_root / "turnstilePatch")
-        if os.path.isdir(ext):
+        for extension_dir in (_pkg_root / "turnstilePatch", _pkg_root.parents[1] / "turnstilePatch"):
+            ext = str(extension_dir)
+            if not os.path.isdir(ext):
+                continue
             try:
                 opts.add_extension(ext)
                 log(f"added extension {ext}")
             except Exception as e:  # noqa: BLE001
                 log(f"extension add failed: {e}")
+            break
 
     global _VIRTUAL_DISPLAY
     if not headless and os.name != "nt" and not os.environ.get("DISPLAY"):

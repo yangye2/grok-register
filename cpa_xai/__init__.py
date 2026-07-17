@@ -16,6 +16,19 @@ from .schema import (
     credential_file_name,
     expired_from_access_token,
 )
+from .sso_oauth import (
+    probe_sso_cookie,
+    sso_oauth_to_cpa_auth,
+    sso_to_token,
+    token_to_cpa_auth,
+)
+from .token_maintain import (
+    RefreshRevokedError,
+    check_account_liveness,
+    refresh_access_token,
+    refresh_cpa_auth,
+    refresh_cpa_auth_file,
+)
 from .writer import write_cpa_xai_auth
 
 # CLIENT_ID lives in oauth_device; re-export from schema if present
@@ -32,7 +45,9 @@ __all__ = [
     "DEFAULT_REDIRECT_URI",
     "DEFAULT_TOKEN_ENDPOINT",
     "OAUTH_CLIENT_ID",
+    "RefreshRevokedError",
     "build_cpa_xai_auth",
+    "check_account_liveness",
     "credential_file_name",
     "existing_cpa_emails",
     "expired_from_access_token",
@@ -40,5 +55,12 @@ __all__ = [
     "parse_accounts_file",
     "probe_mini_response",
     "probe_models",
+    "probe_sso_cookie",
+    "refresh_access_token",
+    "refresh_cpa_auth",
+    "refresh_cpa_auth_file",
+    "sso_oauth_to_cpa_auth",
+    "sso_to_token",
+    "token_to_cpa_auth",
     "write_cpa_xai_auth",
 ]

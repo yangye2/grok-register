@@ -109,10 +109,46 @@
       settingsFormEl.elements.domain_auth_fail_auto_remove.checked = defaults.domain_auth_fail_auto_remove !== false;
     }
     settingsFormEl.elements.temp_mail_site_password.value = defaults.temp_mail_site_password || "";
+    if (settingsFormEl.elements.email_provider) {
+      settingsFormEl.elements.email_provider.value = defaults.email_provider || "duckmail";
+    }
+    const _omSet = (name, value, isCheck=false) => {
+      const el = settingsFormEl.elements[name];
+      if (!el) return;
+      if (isCheck) el.checked = Boolean(value);
+      else el.value = value;
+    };
+    _omSet("outmail_api_base", defaults.outmail_api_base || "");
+    _omSet("outmail_api_key", defaults.outmail_api_key || "");
+    _omSet("outmail_session_cookie", defaults.outmail_session_cookie || "");
+    _omSet("outmail_proxy", defaults.outmail_proxy || "");
+    _omSet("outmail_from_filter", defaults.outmail_from_filter || "x.ai");
+    _omSet("outmail_subject_filter", defaults.outmail_subject_filter || "xAI");
+    _omSet("outmail_anonymous_provider", defaults.outmail_anonymous_provider || "cloudflare");
+    _omSet("outmail_anonymous_domain", defaults.outmail_anonymous_domain || "");
+    _omSet("outmail_anonymous_username_prefix", defaults.outmail_anonymous_username_prefix || "");
+    _omSet("outmail_anonymous_password", defaults.outmail_anonymous_password || "");
+    _omSet("outmail_poll_timeout_sec", defaults.outmail_poll_timeout_sec ?? 180);
+    _omSet("outmail_poll_interval_sec", defaults.outmail_poll_interval_sec ?? 5);
+    _omSet("outmail_plus_alias", defaults.outmail_plus_alias !== false, true);
+    _omSet("outmail_plus_alias_count", defaults.outmail_plus_alias_count ?? 1);
+    _omSet("outmail_alias_suffix_len", defaults.outmail_alias_suffix_len ?? 6);
+    _omSet("outmail_anonymous_enabled", Boolean(defaults.outmail_anonymous_enabled), true);
+    _omSet("outmail_anonymous_delete_after", Boolean(defaults.outmail_anonymous_delete_after), true);
+    _omSet("outmail_exclude_used", defaults.outmail_exclude_used !== false, true);
     settingsFormEl.elements.cpa_auth_dir.value = defaults.cpa_auth_dir || "./cpa_auths";
     settingsFormEl.elements.cpa_proxy.value = defaults.cpa_proxy || "";
     settingsFormEl.elements.cpa_hotload_dir.value = defaults.cpa_hotload_dir || "";
     settingsFormEl.elements.cpa_mint_timeout_sec.value = defaults.cpa_mint_timeout_sec || 300;
+    if (settingsFormEl.elements.cpa_probe_delay_sec) {
+      settingsFormEl.elements.if (settingsFormEl.elements.cpa_prefer_sso_oauth) {
+      settingsFormEl.elements.cpa_prefer_sso_oauth.checked = defaults.cpa_prefer_sso_oauth !== false;
+    }
+    if (settingsFormEl.elements.cpa_probe_after_write) {
+      settingsFormEl.elements.cpa_probe_after_write.checked = defaults.cpa_probe_after_write !== false;
+    }
+    cpa_probe_delay_sec.value = defaults.cpa_probe_delay_sec ?? 5;
+    }
     settingsFormEl.elements.cpa_export_enabled.checked = Boolean(defaults.cpa_export_enabled);
     settingsFormEl.elements.cpa_copy_to_hotload.checked = Boolean(defaults.cpa_copy_to_hotload);
     settingsFormEl.elements.cpa_headless.checked = Boolean(defaults.cpa_headless);
@@ -479,7 +515,30 @@
     }[status] || status || "未授权");
   }
 
-  function isCpaBusy(account) {
+  
+  function tokenStatusLabel(status) {
+    const map = {
+      unknown: "未知",
+      alive: "有效",
+      dead: "失效",
+      sso_dead: "SSO失效",
+      api_dead: "API失效",
+      refresh_failed: "续期失败",
+      refresh_invalid: "RT失效",
+      oauth_failed: "授权失败",
+      error: "异常",
+      refreshed: "已续期",
+    };
+    return map[status] || status || "未知";
+  }
+
+  function ssoAliveLabel(value) {
+    if (value === 1 || value === true || value === "1") return "存活";
+    if (value === 0 || value === false || value === "0") return "失效";
+    return "-";
+  }
+
+function isCpaBusy(account) {
     return ["running", "uploading", "queued"].includes(account.cpa_status);
   }
 
@@ -536,13 +595,19 @@
         <td title="#${account.task_id} ${escapeHtml(account.task_name || "")}">#${account.task_id} ${escapeHtml(account.task_name || "")}</td>
         <td>${escapeHtml(account.created_at || "-")}</td>
         <td title="${escapeHtml(account.cpa_error || account.cpa_path || "")}">${escapeHtml(cpaStatusLabel(account.cpa_status))}</td>
+        <td title="${escapeHtml(account.token_error || account.last_renew_source || "")}">${escapeHtml(tokenStatusLabel(account.token_status))}</td>
+        <td>${escapeHtml(ssoAliveLabel(account.sso_alive))}</td>
+        <td title="${escapeHtml(account.token_checked_at || "")}">${escapeHtml(account.token_expires_at || "-")}</td>
         <td class="account-actions">
-          <button class="button button-small" type="button" data-download-account-id="${account.id}">下载</button>
-          <button class="button button-secondary button-small" type="button" data-cpa-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>授权并推送</button>
-          ${canPushExistingCpa(account) ? `<button class="button button-secondary button-small" type="button" data-cpa-upload-account-id="${account.id}">推送CPA</button>` : ""}
-          ${canPushExistingCpa(account) ? `<button class="button button-secondary button-small" type="button" data-sub2api-upload-account-id="${account.id}">推Sub2API</button>` : ""}
-          <button class="button button-secondary button-small" type="button" data-cpa-log-account-id="${account.id}">日志</button>
-          <button class="button button-danger button-small" type="button" data-delete-account-id="${account.id}">删除</button>
+          <button class="button button-small" type="button" data-download-account-id="${account.id}">??</button>
+          <button class="button button-secondary button-small" type="button" data-probe-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>测活</button>
+          <button class="button button-secondary button-small" type="button" data-refresh-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>续期</button>
+          <button class="button button-secondary button-small" type="button" data-oauth-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>OAuth</button>
+          <button class="button button-secondary button-small" type="button" data-cpa-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>?????</button>
+          ${canPushExistingCpa(account) ? `<button class="button button-secondary button-small" type="button" data-cpa-upload-account-id="${account.id}">??CPA</button>` : ""}
+          ${canPushExistingCpa(account) ? `<button class="button button-secondary button-small" type="button" data-sub2api-upload-account-id="${account.id}">?Sub2API</button>` : ""}
+          <button class="button button-secondary button-small" type="button" data-cpa-log-account-id="${account.id}">??</button>
+          <button class="button button-danger button-small" type="button" data-delete-account-id="${account.id}">??</button>
         </td>
       </tr>
     `).join("");
@@ -577,6 +642,73 @@
         await fetchJson(`/api/accounts/${account.id}`, { method: "DELETE" });
         state.selectedAccountIds.delete(account.id);
         await refreshAccounts();
+      });
+    });
+
+    
+    accountsTableBodyEl.querySelectorAll("[data-probe-account-id]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const account = state.accounts.find((item) => item.id === Number(button.dataset.probeAccountId));
+        if (!account) return;
+        button.disabled = true;
+        try {
+          accountsMetaEl.textContent = `正在测活 ${account.email}...`;
+          const result = await fetchJson(`/api/accounts/${account.id}/probe`, { method: "POST" });
+          state.cpaLogAccountId = account.id;
+          accountsMetaEl.textContent = `测活 ${account.email}: ${result.token_status || (result.alive ? "alive" : "dead")}`;
+          await refreshAccounts();
+        } catch (error) {
+          accountsMetaEl.textContent = `测活失败: ${error.message}`;
+        } finally {
+          button.disabled = false;
+        }
+      });
+    });
+
+    accountsTableBodyEl.querySelectorAll("[data-refresh-account-id]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const account = state.accounts.find((item) => item.id === Number(button.dataset.refreshAccountId));
+        if (!account) return;
+        const confirmed = window.confirm(`确认对账号 ${account.email} 执行 Token 续期吗？`);
+        if (!confirmed) return;
+        button.disabled = true;
+        try {
+          accountsMetaEl.textContent = `正在续期 ${account.email}...`;
+          const result = await fetchJson(`/api/accounts/${account.id}/refresh?force=true`, { method: "POST" });
+          state.cpaLogAccountId = account.id;
+          accountsMetaEl.textContent = result.ok
+            ? `续期 ${account.email}: ${result.renewed ? ("已刷新/" + (result.source || "token")) : "无需刷新"}`
+            : `续期失败: ${result.error || "unknown"}`;
+          await refreshAccounts();
+        } catch (error) {
+          accountsMetaEl.textContent = `续期失败: ${error.message}`;
+        } finally {
+          button.disabled = false;
+        }
+      });
+    });
+
+    accountsTableBodyEl.querySelectorAll("[data-oauth-account-id]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const account = state.accounts.find((item) => item.id === Number(button.dataset.oauthAccountId));
+        if (!account) return;
+        const confirmed = window.confirm(`确认对账号 ${account.email} 执行 SSO OAuth 授权获取吗？`);
+        if (!confirmed) return;
+        button.disabled = true;
+        try {
+          const oauthStart = await fetchJson(`/api/accounts/${account.id}/oauth`, { method: "POST" });
+          state.cpaLogAccountId = account.id;
+          if (oauthStart.queue) {
+            state.cpaQueue = oauthStart.queue;
+            renderCpaQueuePanel();
+          }
+          accountsMetaEl.textContent = `账号 ${account.email} OAuth 已加入全局队列`;
+          await refreshAccounts();
+          await refreshCpaQueue();
+        } catch (error) {
+          accountsMetaEl.textContent = `OAuth 启动失败: ${error.message}`;
+          button.disabled = false;
+        }
       });
     });
 
@@ -1010,7 +1142,54 @@
     }
   }
 
-  async function startBatchCpa(mode) {
+  
+  async function startBatchMaintain(mode) {
+    const ids = Array.from(state.selectedAccountIds);
+    if (!ids.length) {
+      accountsMetaEl.textContent = "请先选择账号";
+      return;
+    }
+    const modeLabel = mode === "probe_only"
+      ? "批量测活"
+      : mode === "refresh_only"
+        ? "批量 Token 续期"
+        : mode === "oauth_only"
+          ? "批量 OAuth 授权"
+          : mode;
+    const confirmed = window.confirm(
+      `确认对选中的 ${ids.length} 个账号执行「${modeLabel}」吗？
+将进入全局队列串行处理。`
+    );
+    if (!confirmed) return;
+    if (accountsProbeBatchBtnEl) accountsProbeBatchBtnEl.disabled = true;
+    if (accountsRefreshTokenBatchBtnEl) accountsRefreshTokenBatchBtnEl.disabled = true;
+    if (accountsOauthBatchBtnEl) accountsOauthBatchBtnEl.disabled = true;
+    try {
+      const result = await fetchJson("/api/accounts/maintain/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account_ids: ids, mode }),
+      });
+      const accepted = Number(result.accepted_count || 0);
+      const skipped = Number(result.skipped_count || 0);
+      const rejected = Number(result.rejected_count || 0);
+      accountsMetaEl.textContent = `${modeLabel}：已入队 ${accepted}，跳过 ${skipped}，拒绝 ${rejected}`;
+      if (result.queue) {
+        state.cpaQueue = result.queue;
+        renderCpaQueuePanel();
+      }
+      await refreshAccounts();
+      await refreshCpaQueue();
+    } catch (error) {
+      accountsMetaEl.textContent = `${modeLabel}启动失败: ${error.message}`;
+    } finally {
+      if (accountsProbeBatchBtnEl) accountsProbeBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
+      if (accountsRefreshTokenBatchBtnEl) accountsRefreshTokenBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
+      if (accountsOauthBatchBtnEl) accountsOauthBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
+    }
+  }
+
+async function startBatchCpa(mode) {
     const ids = Array.from(state.selectedAccountIds);
     if (!ids.length) {
       accountsMetaEl.textContent = "请先选择账号";
@@ -1068,6 +1247,15 @@
     }
   }
 
+  if (accountsProbeBatchBtnEl) {
+    accountsProbeBatchBtnEl.addEventListener("click", () => startBatchMaintain("probe_only"));
+  }
+  if (accountsRefreshTokenBatchBtnEl) {
+    accountsRefreshTokenBatchBtnEl.addEventListener("click", () => startBatchMaintain("refresh_only"));
+  }
+  if (accountsOauthBatchBtnEl) {
+    accountsOauthBatchBtnEl.addEventListener("click", () => startBatchMaintain("oauth_only"));
+  }
   if (accountsCpaBatchBtnEl) {
     accountsCpaBatchBtnEl.addEventListener("click", () => startBatchCpa("authorize_and_push"));
   }
@@ -1216,10 +1404,37 @@
       domain_auth_fail_threshold: Number(settingsFormEl.elements.domain_auth_fail_threshold?.value ?? 3) || 3,
       domain_auth_fail_auto_remove: Boolean(settingsFormEl.elements.domain_auth_fail_auto_remove?.checked),
       temp_mail_site_password: settingsFormEl.elements.temp_mail_site_password.value.trim(),
+      email_provider: String(settingsFormEl.elements.email_provider?.value || "duckmail").trim() || "duckmail",
+      outmail_api_base: String(settingsFormEl.elements.outmail_api_base?.value || "").trim(),
+      outmail_api_key: String(settingsFormEl.elements.outmail_api_key?.value || "").trim(),
+      outmail_session_cookie: String(settingsFormEl.elements.outmail_session_cookie?.value || "").trim(),
+      outmail_proxy: String(settingsFormEl.elements.outmail_proxy?.value || "").trim(),
+      outmail_plus_alias: Boolean(settingsFormEl.elements.outmail_plus_alias?.checked),
+      outmail_plus_alias_count: Number(settingsFormEl.elements.outmail_plus_alias_count?.value ?? 1) || 1,
+      outmail_alias_suffix_len: Number(settingsFormEl.elements.outmail_alias_suffix_len?.value ?? 6) || 6,
+      outmail_fetch_top: Number(settingsFormEl.elements.outmail_fetch_top?.value ?? 10) || 10,
+      outmail_poll_interval_sec: Number(settingsFormEl.elements.outmail_poll_interval_sec?.value ?? 5) || 5,
+      outmail_poll_timeout_sec: Number(settingsFormEl.elements.outmail_poll_timeout_sec?.value ?? 180) || 180,
+      outmail_since_padding_sec: Number(settingsFormEl.elements.outmail_since_padding_sec?.value ?? 30) || 30,
+      outmail_from_filter: String(settingsFormEl.elements.outmail_from_filter?.value || "x.ai").trim(),
+      outmail_subject_filter: String(settingsFormEl.elements.outmail_subject_filter?.value || "xAI").trim(),
+      outmail_group_id: String(settingsFormEl.elements.outmail_group_id?.value || "").trim(),
+      outmail_anonymous_enabled: Boolean(settingsFormEl.elements.outmail_anonymous_enabled?.checked),
+      outmail_anonymous_provider: String(settingsFormEl.elements.outmail_anonymous_provider?.value || "cloudflare").trim() || "cloudflare",
+      outmail_anonymous_domain: String(settingsFormEl.elements.outmail_anonymous_domain?.value || "").trim(),
+      outmail_anonymous_username_prefix: String(settingsFormEl.elements.outmail_anonymous_username_prefix?.value || "").trim(),
+      outmail_anonymous_password: String(settingsFormEl.elements.outmail_anonymous_password?.value || "").trim(),
+      outmail_anonymous_delete_after: Boolean(settingsFormEl.elements.outmail_anonymous_delete_after?.checked),
+      outmail_exclude_used: Boolean(settingsFormEl.elements.outmail_exclude_used?.checked),
+      outmail_used_file: String(settingsFormEl.elements.outmail_used_file?.value || "outmail_used_mailboxes.txt").trim() || "outmail_used_mailboxes.txt",
       cpa_auth_dir: settingsFormEl.elements.cpa_auth_dir.value.trim(),
       cpa_proxy: settingsFormEl.elements.cpa_proxy.value.trim(),
       cpa_hotload_dir: settingsFormEl.elements.cpa_hotload_dir.value.trim(),
       cpa_mint_timeout_sec: Number(settingsFormEl.elements.cpa_mint_timeout_sec.value) || 300,
+      cpa_prefer_sso_oauth: settingsFormEl.elements.cpa_prefer_sso_oauth ? Boolean(settingsFormEl.elements.cpa_prefer_sso_oauth.checked) : true,
+      cpa_probe_after_write: settingsFormEl.elements.cpa_probe_after_write ? Boolean(settingsFormEl.elements.cpa_probe_after_write.checked) : true,
+      cpa_probe_delay_sec: Number(settingsFormEl.elements.cpa_probe_delay_sec?.value ?? 5),
+      cpa_probe_required: settingsFormEl.elements.cpa_probe_required ? Boolean(settingsFormEl.elements.cpa_probe_required.checked) : false,
       cpa_export_enabled: settingsFormEl.elements.cpa_export_enabled.checked,
       cpa_copy_to_hotload: settingsFormEl.elements.cpa_copy_to_hotload.checked,
       cpa_headless: settingsFormEl.elements.cpa_headless.checked,

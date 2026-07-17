@@ -62,6 +62,36 @@ TEMP_MAIL_PROVIDER = str(_conf.get("temp_mail_provider") or "").strip().lower()
 _domain_rr_lock = threading.Lock()
 _domain_rr_index = 0
 
+EMAIL_PROVIDER = str(
+    _conf.get("email_provider")
+    or _conf.get("temp_mail_provider")
+    or _conf.get("mail_provider")
+    or ""
+).strip().lower()
+
+# Outmail client (Outlook pool + anonymous temp mailbox)
+try:
+    from outmail_client import (  # type: ignore
+        configure as _outmail_configure,
+        get_email_provider as _outmail_get_provider,
+        outmail_get_email_and_token,
+        outmail_get_oai_code,
+        _outmail_is_provider,
+        outmail_cleanup_mailbox,
+        outmail_decode_token,
+    )
+    _outmail_configure(_conf, merge=False)
+    _HAS_OUTMAIL = True
+    _outmail_import_exc = None
+except Exception as _exc:  # pragma: no cover
+    _HAS_OUTMAIL = False
+    _outmail_import_exc = _exc
+
+    def _outmail_is_provider(provider=None):  # type: ignore
+        p = str(provider or EMAIL_PROVIDER or TEMP_MAIL_PROVIDER or "").strip().lower()
+        return p in {"outmail", "outlook", "outlookemail"}
+
+
 # ============================================================
 # 适配层：为 DrissionPage_example.py 提供简单接口
 # ============================================================
@@ -69,11 +99,80 @@ _domain_rr_index = 0
 _temp_email_cache: Dict[str, str] = {}
 
 
-def get_email_and_token() -> Tuple[Optional[str], Optional[str]]:
-    """
-    创建临时邮箱并返回 (email, mail_token)。
-    供 DrissionPage_example.py 调用。
-    """
+def get_email_provider() -> str:
+    """Active mail provider: outmail | duckmail | generic (cloudflare_temp_email)."""
+    if _HAS_OUTMAIL:
+        try:
+            p = str(_outmail_get_provider() or "").strip().lower()
+            if p:
+                return p
+        except Exception:
+            pass
+    return (EMAIL_PROVIDER or TEMP_MAIL_PROVIDER or "").strip().lower()
+
+
+def reload_mail_config(config=None):
+    """Reload config for long-running workers (console task config.json)."""
+    global _conf, TEMP_MAIL_API_BASE, TEMP_MAIL_ADMIN_PASSWORD, TEMP_MAIL_DOMAIN
+    global TEMP_MAIL_DOMAINS_RAW, TEMP_MAIL_DOMAIN_PICK, TEMP_MAIL_DOMAINS_REMOVED_RAW
+    global TEMP_MAIL_SITE_PASSWORD, PROXY, TEMP_MAIL_PROVIDER, EMAIL_PROVIDER
+    if config is None:
+        if _config_path.exists():
+            with _config_path.open("r", encoding="utf-8") as f:
+                config = json.load(f)
+        else:
+            config = {}
+    _conf = dict(config or {})
+    TEMP_MAIL_API_BASE = str(
+        _conf.get("temp_mail_api_base") or _conf.get("duckmail_api_base") or ""
+    )
+    TEMP_MAIL_ADMIN_PASSWORD = str(
+        _conf.get("temp_mail_admin_password")
+        or _conf.get("duckmail_api_key")
+        or _conf.get("duckmail_bearer")
+        or ""
+    )
+    TEMP_MAIL_DOMAIN = str(_conf.get("temp_mail_domain") or _conf.get("duckmail_domain") or "")
+    TEMP_MAIL_DOMAINS_RAW = _conf.get("temp_mail_domains")
+    if TEMP_MAIL_DOMAINS_RAW in (None, ""):
+        TEMP_MAIL_DOMAINS_RAW = _conf.get("defaultDomains") or ""
+    TEMP_MAIL_DOMAIN_PICK = str(_conf.get("temp_mail_domain_pick") or "round_robin").strip().lower()
+    TEMP_MAIL_DOMAINS_REMOVED_RAW = (
+        _conf.get("temp_mail_domains_removed")
+        or _conf.get("temp_mail_domains_disabled")
+        or ""
+    )
+    TEMP_MAIL_SITE_PASSWORD = str(_conf.get("temp_mail_site_password", ""))
+    PROXY = str(_conf.get("proxy", ""))
+    TEMP_MAIL_PROVIDER = str(_conf.get("temp_mail_provider") or "").strip().lower()
+    EMAIL_PROVIDER = str(
+        _conf.get("email_provider")
+        or _conf.get("temp_mail_provider")
+        or _conf.get("mail_provider")
+        or ""
+    ).strip().lower()
+    if _HAS_OUTMAIL:
+        _outmail_configure(_conf, merge=False)
+
+
+def get_email_and_token():
+    """????????? (email, mail_token)??? outmail ???/?????"""
+    provider = get_email_provider()
+    if _outmail_is_provider(provider):
+        if not _HAS_OUTMAIL:
+            raise Exception(f"outmail ?????: {_outmail_import_exc}")
+        try:
+            if _config_path.exists():
+                with _config_path.open("r", encoding="utf-8") as f:
+                    _outmail_configure(json.load(f), merge=True)
+        except Exception:
+            pass
+        email, token = outmail_get_email_and_token()
+        if email and token:
+            _temp_email_cache[email] = token
+            return email, token
+        return None, None
+
     email, _password, mail_token = create_temp_email()
     if email and mail_token:
         _temp_email_cache[email] = mail_token
@@ -81,24 +180,52 @@ def get_email_and_token() -> Tuple[Optional[str], Optional[str]]:
     return None, None
 
 
-def get_oai_code(dev_token: str, email: str, timeout: int = 30) -> Optional[str]:
-    """
-    轮询收件箱获取 OTP 验证码。
-    供 DrissionPage_example.py 调用。
+def get_oai_code(dev_token, email, timeout=30):
+    """??????? OTP ????outmail token ??? Outmail ???"""
+    token_s = str(dev_token or "")
+    provider = get_email_provider()
+    if _outmail_is_provider(provider) or token_s.startswith("outmail|"):
+        if not _HAS_OUTMAIL:
+            raise Exception(f"outmail ?????: {_outmail_import_exc}")
+        try:
+            cfg_timeout = int((_conf.get("outmail_poll_timeout_sec") or 180))
+        except (TypeError, ValueError):
+            cfg_timeout = 180
+        use_timeout = max(int(timeout or 0), cfg_timeout) if int(timeout or 0) <= 30 else int(timeout)
+        try:
+            poll_interval = int(_conf.get("outmail_poll_interval_sec") or 5)
+        except (TypeError, ValueError):
+            poll_interval = 5
+        code = outmail_get_oai_code(
+            dev_token,
+            email,
+            timeout=use_timeout,
+            poll_interval=poll_interval,
+            log_callback=lambda m: print(m, flush=True),
+        )
+        if code:
+            return str(code).strip()
+        return None
 
-    Returns:
-        验证码字符串（去除连字符，如 "MM0SF3"）或 None
-    """
     code = wait_for_verification_code(mail_token=dev_token, timeout=timeout)
     if code:
         code = code.replace("-", "")
     return code
 
 
-# ============================================================
-# 临时邮箱核心函数
-# ============================================================
-
+def cleanup_mailbox_if_needed(email, dev_token="", log=None):
+    """Optional Outmail cleanup after successful registration."""
+    if not _HAS_OUTMAIL:
+        return
+    token_s = str(dev_token or "")
+    if not (token_s.startswith("outmail|") or _outmail_is_provider(get_email_provider())):
+        return
+    try:
+        mailbox, _since, _reg, mode = outmail_decode_token(token_s, fallback_email=email)
+        outmail_cleanup_mailbox(mailbox or email, mode=mode, log_callback=log)
+    except Exception as exc:
+        if log:
+            log(f"[outmail] cleanup skipped: {exc}")
 
 
 def _parse_domain_list(value: Any) -> List[str]:

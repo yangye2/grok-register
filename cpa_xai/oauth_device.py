@@ -218,3 +218,41 @@ def poll_device_token(
         log(f"oauth poll unexpected HTTP {status}: {body!r}")
         _sleep_with_cancel(sleep_for)
     raise OAuthDeviceError("device auth timed out waiting for user approval")
+
+
+
+def refresh_with_refresh_token(
+    refresh_token: str,
+    *,
+    client_id: str = CLIENT_ID,
+    timeout: float = 30.0,
+    proxy: str | None = None,
+) -> TokenResult:
+    """OIDC refresh_token grant ? new access/refresh tokens."""
+    refresh_token = (refresh_token or "").strip()
+    if not refresh_token:
+        raise OAuthDeviceError("refresh_token is empty")
+    status, body = _post_form(
+        TOKEN_URL,
+        {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+        },
+        timeout=timeout,
+        proxy=proxy,
+    )
+    if status >= 400 or not isinstance(body, dict):
+        raise OAuthDeviceError(f"refresh_token grant failed HTTP {status}: {body!r}")
+    access = str(body.get("access_token") or "").strip()
+    if not access:
+        raise OAuthDeviceError(f"refresh response missing access_token: {body!r}")
+    new_refresh = str(body.get("refresh_token") or refresh_token).strip()
+    return TokenResult(
+        access_token=access,
+        refresh_token=new_refresh,
+        id_token=str(body.get("id_token") or "") or None,
+        token_type=str(body.get("token_type") or "Bearer"),
+        expires_in=int(body.get("expires_in") or 21600),
+        raw=body,
+    )

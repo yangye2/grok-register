@@ -121,6 +121,9 @@
             <div class="panel-actions">
               <button id="accountsRefreshBtn" class="button button-secondary" type="button">刷新 SSO</button>
               <button id="accountsSelectFilteredBtn" class="button button-secondary" type="button">全选筛选结果</button>
+              <button id="accountsProbeBatchBtn" class="button button-secondary" type="button" disabled>批量测活</button>
+              <button id="accountsRefreshTokenBatchBtn" class="button button-secondary" type="button" disabled>批量续期</button>
+              <button id="accountsOauthBatchBtn" class="button button-secondary" type="button" disabled>批量 OAuth 授权</button>
               <button id="accountsCpaBatchBtn" class="button" type="button" disabled>批量授权并推送</button>
               <button id="accountsCpaPushBatchBtn" class="button button-secondary" type="button" disabled>批量推送 CPA</button>
             <button id="accountsSub2apiPushBatchBtn" class="button button-secondary" type="button" disabled>批量推送 Sub2API</button>
@@ -180,6 +183,9 @@
                   <th>任务</th>
                   <th>创建时间</th>
                   <th>CPA</th>
+                  <th>Token</th>
+                  <th>SSO测活</th>
+                  <th>过期时间</th>
                   <th>操作</th>
                 </tr>
               </thead>
@@ -232,7 +238,91 @@
               <span>邮箱域名</span>
               <input name="temp_mail_domain" placeholder="example.com 或多个 a.com,b.com">
             </label>
-            <label>
+            
+            <div class="form-section-title">Outmail 邮箱（账号池 / 匿名临时邮箱）</div>
+            <label class="field">
+              <span>email_provider</span>
+              <select name="email_provider">
+                <option value="duckmail">duckmail / temp_mail（默认）</option>
+                <option value="outmail">outmail（Outlook 池 / 匿名）</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>outmail_api_base</span>
+              <input name="outmail_api_base" placeholder="https://mail.example.com">
+            </label>
+            <label class="field">
+              <span>outmail_api_key</span>
+              <input name="outmail_api_key" placeholder="X-API-Key">
+            </label>
+            <label class="field">
+              <span>outmail_session_cookie</span>
+              <input name="outmail_session_cookie" placeholder="session=... 匿名邮箱 CSRF 需要">
+            </label>
+            <label class="field">
+              <span>outmail_proxy</span>
+              <input name="outmail_proxy" placeholder="访问 outmail 代理，空=直连">
+            </label>
+            <label class="field checkbox-field">
+              <input name="outmail_plus_alias" type="checkbox" checked>
+              <span>outmail_plus_alias（local+xxxx@domain）</span>
+            </label>
+            <label class="field">
+              <span>outmail_plus_alias_count（每主邮箱可用别名次数）</span>
+              <input name="outmail_plus_alias_count" type="number" min="1" max="1000" value="1">
+            </label>
+            <label class="field">
+              <span>outmail_alias_suffix_len（别名后缀长度）</span>
+              <input name="outmail_alias_suffix_len" type="number" min="2" max="32" value="6">
+            </label>
+            <label class="field checkbox-field">
+              <input name="outmail_anonymous_enabled" type="checkbox">
+              <span>outmail_anonymous_enabled（匿名临时郮箱）</span>
+            </label>
+            <label class="field">
+              <span>outmail_anonymous_provider</span>
+              <select name="outmail_anonymous_provider">
+                <option value="cloudflare">cloudflare</option>
+                <option value="duckmail">duckmail</option>
+                <option value="gptmail">gptmail</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>outmail_anonymous_domain</span>
+              <input name="outmail_anonymous_domain" placeholder="a.com,b.com 多域名轮询">
+            </label>
+            <label class="field">
+              <span>outmail_anonymous_username_prefix</span>
+              <input name="outmail_anonymous_username_prefix" placeholder="optional">
+            </label>
+            <label class="field">
+              <span>outmail_anonymous_password</span>
+              <input name="outmail_anonymous_password" placeholder="duckmail 可选">
+            </label>
+            <label class="field checkbox-field">
+              <input name="outmail_anonymous_delete_after" type="checkbox">
+              <span>outmail_anonymous_delete_after</span>
+            </label>
+            <label class="field">
+              <span>outmail_poll_timeout_sec</span>
+              <input name="outmail_poll_timeout_sec" type="number" min="30" max="600" value="180">
+            </label>
+            <label class="field">
+              <span>outmail_poll_interval_sec</span>
+              <input name="outmail_poll_interval_sec" type="number" min="1" max="60" value="5">
+            </label>
+            <label class="field">
+              <span>outmail_from_filter / subject</span>
+              <div class="field-row">
+                <input name="outmail_from_filter" placeholder="x.ai">
+                <input name="outmail_subject_filter" placeholder="xAI">
+              </div>
+            </label>
+            <label class="field checkbox-field">
+              <input name="outmail_exclude_used" type="checkbox" checked>
+              <span>outmail_exclude_used（跳过已用主邮箱）</span>
+            </label>
+<label>
               <span>授权失败移除阈值</span>
               <input name="domain_auth_fail_threshold" type="number" min="1" max="100" title="同一邮箱域名授权测活失败达到该次数后自动移出域名池">
             </label>
@@ -267,6 +357,19 @@
             <label>
               <span>CPA 授权超时（秒）</span>
               <input name="cpa_mint_timeout_sec" type="number" min="60" max="900">
+            </label>
+            
+            <label class="field checkbox-field">
+              <input name="cpa_prefer_sso_oauth" type="checkbox" checked>
+              <span>cpa_prefer_sso_oauth（注册/授权优先 SSO 纯 HTTP OAuth）</span>
+            </label>
+            <label class="field checkbox-field">
+              <input name="cpa_probe_after_write" type="checkbox" checked>
+              <span>cpa_probe_after_write（授权后测活）</span>
+            </label>
+<label class="field">
+              <span>cpa_probe_delay_sec（注册后测活延时秒，默认5）</span>
+              <input name="cpa_probe_delay_sec" type="number" min="0" max="120" step="0.5" value="5">
             </label>
             <label>
               <span>自动生成 CPA 授权</span>

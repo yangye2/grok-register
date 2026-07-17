@@ -136,6 +136,24 @@ def _import_cpa_to_sub2api():
         return mod
     raise ImportError("cannot import cpa_to_sub2api")
 
+
+def _probe_delay_sec(config: dict | None = None) -> float:
+    cfg = config or {}
+    try:
+        delay = float(cfg.get("cpa_probe_delay_sec", 5) or 5)
+    except (TypeError, ValueError):
+        delay = 5.0
+    return max(0.0, min(120.0, delay))
+
+
+def _sleep_before_probe(config: dict | None, log) -> None:
+    delay = _probe_delay_sec(config)
+    if delay <= 0:
+        return
+    log(f"[cpa-health] wait {delay:.1f}s before probe (cpa_probe_delay_sec)")
+    time.sleep(delay)
+
+
 def health_check_cpa_auth_before_upload(
     path_value: str | Path | None,
     config: dict,
@@ -361,6 +379,109 @@ def export_cookies_from_page(page: Any) -> list[dict]:
     return []
 
 
+
+
+def export_cpa_xai_via_sso(
+    email: str,
+    sso: str,
+    *,
+    config: dict | None = None,
+    log_callback: Callable[[str], None] | None = None,
+) -> dict:
+    """Mint CPA auth via pure HTTP SSO device-flow (no browser password login)."""
+    cfg = config or {}
+    log = log_callback or (lambda m: print(m, flush=True))
+    if not cfg.get("cpa_export_enabled", True):
+        log("[cpa] export disabled")
+        return {"ok": False, "skipped": True, "reason": "disabled"}
+    sso_val = (sso or "").strip()
+    email = (email or "").strip()
+    if not sso_val:
+        return {"ok": False, "error": "missing sso"}
+    if not email:
+        return {"ok": False, "error": "missing email"}
+
+    tools_dir = cfg.get("api_reverse_tools") or cfg.get("cpa_xai_parent") or None
+    _ensure_cpa_xai_on_path(tools_dir)
+    try:
+        from cpa_xai import sso_oauth_to_cpa_auth, write_cpa_xai_auth  # type: ignore
+        from cpa_xai.probe import probe_models  # type: ignore
+    except Exception as e:  # noqa: BLE001
+        log(f"[cpa] import cpa_xai sso oauth failed: {e}")
+        return {"ok": False, "error": f"import: {e}"}
+
+    out_dir = Path(cfg.get("cpa_auth_dir") or _DEFAULT_OUT).expanduser()
+    if not out_dir.is_absolute():
+        out_dir = (_REG_DIR / out_dir).resolve()
+    hotload_raw = (cfg.get("cpa_hotload_dir") or "").strip()
+    cpa_dir = Path(hotload_raw).expanduser() if hotload_raw else None
+    if cpa_dir and not cpa_dir.is_absolute():
+        cpa_dir = (_REG_DIR / cpa_dir).resolve()
+
+    proxy = (cfg.get("cpa_proxy") or cfg.get("browser_proxy") or cfg.get("proxy") or "").strip()
+    if not proxy:
+        proxy = (
+            os.environ.get("https_proxy")
+            or os.environ.get("HTTPS_PROXY")
+            or os.environ.get("http_proxy")
+            or ""
+        ).strip()
+    base_url = cfg.get("cpa_base_url") or "https://cli-chat-proxy.grok.com/v1"
+    probe = bool(cfg.get("cpa_probe_after_write", True))
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log(f"[cpa-sso] oauth device-flow for {email} proxy={proxy or '(none)'}")
+    try:
+        payload = sso_oauth_to_cpa_auth(
+            sso_val,
+            email=email,
+            proxy=proxy or None,
+            base_url=base_url,
+            log=lambda m: log(f"[cpa-sso] {m}"),
+        )
+    except Exception as e:  # noqa: BLE001
+        log(f"[cpa-sso] oauth failed: {e}")
+        return {"ok": False, "error": str(e), "mode": "sso_oauth"}
+
+    path_written = write_cpa_xai_auth(out_dir, payload)
+    log(f"[cpa-sso] wrote {path_written}")
+    result: dict = {
+        "ok": True,
+        "email": email,
+        "path": str(path_written),
+        "mode": "sso_oauth",
+        "base_url": base_url,
+        "proxy": proxy,
+    }
+
+    if probe:
+        _sleep_before_probe(cfg, log)
+        try:
+            pr = probe_models(payload["access_token"], base_url=base_url, proxy=proxy or None)
+            result["probe_models"] = pr
+            log(f"[cpa-sso] probe models ok={pr.get('ok')} has_grok_45={pr.get('has_grok_45')}")
+            if not pr.get("has_grok_45"):
+                result["ok"] = False
+                result["error"] = "token ok but grok-4.5 not listed"
+        except Exception as e:  # noqa: BLE001
+            result["probe_error"] = str(e)
+            log(f"[cpa-sso] probe failed: {e}")
+
+    # optional hotload copy
+    if bool(cfg.get("cpa_copy_to_hotload")) and cpa_dir is not None and result.get("ok"):
+        try:
+            cpa_dir.mkdir(parents=True, exist_ok=True)
+            dest = cpa_dir / path_written.name
+            dest.write_text(path_written.read_text(encoding="utf-8"), encoding="utf-8")
+            result["hotload_path"] = str(dest)
+            log(f"[cpa-sso] copied to hotload: {dest}")
+        except Exception as e:  # noqa: BLE001
+            log(f"[cpa-sso] hotload copy failed: {e}")
+            result["hotload_error"] = str(e)
+
+    return result
+
+
 def export_cpa_xai_for_account(
     email: str,
     password: str,
@@ -465,23 +586,52 @@ def export_cpa_xai_for_account(
     def _log(msg: str) -> None:
         log(f"[cpa] {msg}")
 
-    result = mint_and_export(
-        email=email,
-        password=password,
-        auth_dir=out_dir,
-        page=None if force_standalone else page,
-        proxy=proxy or None,
-        headless=headless,
-        base_url=base_url,
-        probe=probe,
-        probe_chat=probe_chat,
-        browser_timeout_sec=timeout,
-        force_standalone=force_standalone,
-        cookies=use_cookies,
-        reuse_browser=reuse_browser,
-        recycle_every=recycle_every,
-        log=_log,
-    )
+    # Prefer pure HTTP SSO OAuth when enabled (faster; no browser password login).
+    prefer_sso = bool(cfg.get("cpa_prefer_sso_oauth", True))
+    sso_for_oauth = (sso or "").strip()
+    if not sso_for_oauth and isinstance(use_cookies, list):
+        for c in use_cookies:
+            if isinstance(c, dict) and c.get("name") in ("sso", "sso-rw") and c.get("value"):
+                sso_for_oauth = str(c.get("value") or "").strip()
+                break
+    if prefer_sso and sso_for_oauth:
+        log("[cpa] prefer SSO pure HTTP OAuth device-flow")
+        sso_result = export_cpa_xai_via_sso(
+            email,
+            sso_for_oauth,
+            config=cfg,
+            log_callback=log,
+        )
+        if sso_result.get("ok") and sso_result.get("path"):
+            result = dict(sso_result)
+            # Align keys with browser mint path for shared post-processing below.
+            if result.get("hotload_path") and not result.get("cpa_path"):
+                result["cpa_path"] = result.get("hotload_path")
+            # Jump to shared hotload/cloud/sub2api handling by skipping browser mint.
+        else:
+            log(f"[cpa] SSO OAuth failed, fallback browser mint: {sso_result.get('error') or sso_result}")
+            result = None
+    else:
+        result = None
+
+    if result is None:
+        result = mint_and_export(
+            email=email,
+            password=password,
+            auth_dir=out_dir,
+            page=None if force_standalone else page,
+            proxy=proxy or None,
+            headless=headless,
+            base_url=base_url,
+            probe=probe,
+            probe_chat=probe_chat,
+            browser_timeout_sec=timeout,
+            force_standalone=force_standalone,
+            cookies=use_cookies,
+            reuse_browser=reuse_browser,
+            recycle_every=recycle_every,
+            log=_log,
+        )
 
     if result.get("ok") and result.get("path") and cfg.get("cpa_copy_to_hotload", False) and cpa_dir:
         try:

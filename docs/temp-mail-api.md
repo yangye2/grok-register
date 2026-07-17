@@ -277,3 +277,48 @@ curl "https://mail-api.example.com/api/mail/msg_001" \
   -H "Authorization: Bearer <jwt>" \
   -H "x-custom-auth: <site_password>"
 ```
+
+
+## Outmail?Outlook ??? / ???????
+
+?? `email_provider=outmail` ?????? Outmail ?? API??? grok-register-roxy??
+
+### ?????????
+
+- `outmail_api_base` + `outmail_api_key`
+- ? `/api/accounts` ? Outlook ????? `outmail_plus_alias` ?? `local+xxxx@domain` ??
+- ???? inbox/junk/all?? `outmail_from_filter` / `outmail_subject_filter` ?? xAI ???
+
+### ??????
+
+- `outmail_anonymous_enabled=true`
+- ?? `outmail_session_cookie`?CSRF?
+- `outmail_anonymous_provider`: `cloudflare` | `duckmail` | `gptmail`
+- `outmail_anonymous_domain`: ???????????
+- ???`POST /api/temp-emails/generate`
+- ???`refresh` / `list` + detail
+
+### ?????
+
+| ?? | ?? |
+| --- | --- |
+| `email_provider` | `outmail` ?? |
+| `outmail_api_base` | Outmail ???? |
+| `outmail_api_key` | `X-API-Key` |
+| `outmail_session_cookie` | ???? CSRF Cookie |
+| `outmail_proxy` | ?? Outmail ?????=?? |
+| `outmail_poll_timeout_sec` | ??????? 180 |
+| `outmail_exclude_used` | ??????? |
+| `outmail_used_file` | ???????? |
+
+
+### Plus 别名配额
+
+| 配置 | 默认 | 说明 |
+| --- | --- | --- |
+| `outmail_plus_alias` | true | 是否生成 `local+xxxx@domain` 别名注册 |
+| `outmail_plus_alias_count` | 1 | 每个主邮箱最多成功注册次数（每次不同别名） |
+| `outmail_alias_suffix_len` | 6 | 别名随机后缀长度（2-32） |
+
+主邮箱每成功一次会在 `outmail_used_file` 记一笔；达到 `outmail_plus_alias_count` 后不再选取。
+关闭 plus 别名时配额固定为 1。

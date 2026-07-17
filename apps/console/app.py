@@ -67,7 +67,7 @@ AUTH_SESSION_MAX_AGE = max(3600, int(os.getenv("GROK_REGISTER_AUTH_SESSION_HOURS
 
 REGISTER_RUNNER_DIR = SOURCE_PROJECT / "apps" / "register-runner"
 CPA_WORKER_DIR = SOURCE_PROJECT / "apps" / "cpa-worker"
-PROJECT_FILES = ("DrissionPage_example.py", "email_register.py", "cpa_export.py", "cpa_to_sub2api.py")
+PROJECT_FILES = ("DrissionPage_example.py", "email_register.py", "outmail_client.py", "cpa_export.py", "cpa_to_sub2api.py")
 PROJECT_DIRS = ("turnstilePatch", "cpa_xai", "health_check")
 
 
@@ -86,6 +86,7 @@ def missing_source_items() -> list[str]:
     required_paths = [
         REGISTER_RUNNER_DIR / "DrissionPage_example.py",
         REGISTER_RUNNER_DIR / "email_register.py",
+        REGISTER_RUNNER_DIR / "outmail_client.py",
         CPA_WORKER_DIR / "cpa_export.py",
         CPA_WORKER_DIR / "cpa_to_sub2api.py",
         CPA_WORKER_DIR / "cpa_xai" / "__init__.py",
@@ -240,6 +241,13 @@ def init_db() -> None:
             ("cpa_error", "TEXT"),
             ("cpa_log", "TEXT"),
             ("cpa_updated_at", "TEXT"),
+            ("token_status", "TEXT NOT NULL DEFAULT 'unknown'"),
+            ("token_expires_at", "TEXT"),
+            ("token_checked_at", "TEXT"),
+            ("token_error", "TEXT"),
+            ("sso_alive", "INTEGER"),
+            ("last_renew_source", "TEXT"),
+            ("last_renew_at", "TEXT"),
         ):
             if name not in columns:
                 conn.execute(f"ALTER TABLE accounts ADD COLUMN {name} {definition}")
@@ -921,6 +929,29 @@ class SystemSettings(BaseModel):
     temp_mail_domain: str = ""
     temp_mail_domains_removed: str = ""
     temp_mail_site_password: str = ""
+    email_provider: str = "duckmail"
+    outmail_api_base: str = ""
+    outmail_api_key: str = ""
+    outmail_session_cookie: str = ""
+    outmail_proxy: str = ""
+    outmail_plus_alias: bool = True
+    outmail_plus_alias_count: int = Field(default=1, ge=1, le=1000)
+    outmail_alias_suffix_len: int = Field(default=6, ge=2, le=32)
+    outmail_fetch_top: int = Field(default=10, ge=1, le=50)
+    outmail_poll_interval_sec: int = Field(default=5, ge=1, le=60)
+    outmail_poll_timeout_sec: int = Field(default=180, ge=30, le=600)
+    outmail_since_padding_sec: int = Field(default=30, ge=0, le=300)
+    outmail_from_filter: str = "x.ai"
+    outmail_subject_filter: str = "xAI"
+    outmail_group_id: str = ""
+    outmail_anonymous_enabled: bool = False
+    outmail_anonymous_provider: str = "cloudflare"
+    outmail_anonymous_domain: str = ""
+    outmail_anonymous_username_prefix: str = ""
+    outmail_anonymous_password: str = ""
+    outmail_anonymous_delete_after: bool = False
+    outmail_exclude_used: bool = True
+    outmail_used_file: str = "outmail_used_mailboxes.txt"
     domain_auth_fail_threshold: int = Field(default=3, ge=1, le=100)
     domain_auth_fail_auto_remove: bool = True
     cpa_export_enabled: bool = True
@@ -930,6 +961,10 @@ class SystemSettings(BaseModel):
     cpa_proxy: str = ""
     cpa_headless: bool = False
     cpa_mint_timeout_sec: int = Field(default=300, ge=60, le=900)
+    cpa_prefer_sso_oauth: bool = True
+    cpa_probe_after_write: bool = True
+    cpa_probe_delay_sec: float = Field(default=5.0, ge=0.0, le=120.0)
+    cpa_probe_required: bool = False
     cpa_cloud_upload_enabled: bool = False
     cpa_cloud_api_base: str = ""
     cpa_cloud_management_key: str | None = None
@@ -1036,9 +1071,55 @@ def merged_defaults() -> dict[str, Any]:
         "temp_mail_domain",
         "temp_mail_domains_removed",
         "temp_mail_site_password",
+        "email_provider",
+        "outmail_api_base",
+        "outmail_api_key",
+        "outmail_session_cookie",
+        "outmail_proxy",
+        "outmail_from_filter",
+        "outmail_subject_filter",
+        "outmail_group_id",
+        "outmail_anonymous_provider",
+        "outmail_anonymous_domain",
+        "outmail_anonymous_username_prefix",
+        "outmail_anonymous_password",
+        "outmail_used_file",
     ):
         if key in saved:
-            base[key] = str(saved.get(key, ""))
+            base[key] = str(saved.get(key, "") or "")
+    for key in (
+        "outmail_plus_alias",
+        "outmail_anonymous_enabled",
+        "outmail_anonymous_delete_after",
+        "outmail_exclude_used",
+    ):
+        if key in saved:
+            base[key] = bool(saved.get(key))
+    for key in (
+        "outmail_fetch_top",
+        "outmail_poll_interval_sec",
+        "outmail_poll_timeout_sec",
+        "outmail_since_padding_sec",
+        "outmail_plus_alias_count",
+        "outmail_alias_suffix_len",
+    ):
+        if key in saved and saved.get(key) is not None:
+            try:
+                base[key] = int(saved.get(key))
+            except (TypeError, ValueError):
+                pass
+    for key in (
+        "cpa_prefer_sso_oauth",
+        "cpa_probe_after_write",
+        "cpa_probe_required",
+    ):
+        if key in saved:
+            base[key] = bool(saved.get(key))
+    if "cpa_probe_delay_sec" in saved and saved.get("cpa_probe_delay_sec") is not None:
+        try:
+            base["cpa_probe_delay_sec"] = float(saved.get("cpa_probe_delay_sec"))
+        except (TypeError, ValueError):
+            base["cpa_probe_delay_sec"] = 5.0
     for key in ("domain_auth_fail_threshold", "domain_auth_fail_auto_remove"):
         if key in saved:
             base[key] = saved[key]
@@ -1131,7 +1212,34 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
         "temp_mail_domain": defaults.get("temp_mail_domain", "") if payload.temp_mail_domain is None else payload.temp_mail_domain.strip(),
         "temp_mail_domains_removed": str(defaults.get("temp_mail_domains_removed") or ""),
         "temp_mail_site_password": defaults.get("temp_mail_site_password", "") if payload.temp_mail_site_password is None else payload.temp_mail_site_password.strip(),
+        "email_provider": str(defaults.get("email_provider") or "duckmail"),
+        "outmail_api_base": str(defaults.get("outmail_api_base") or ""),
+        "outmail_api_key": str(defaults.get("outmail_api_key") or ""),
+        "outmail_session_cookie": str(defaults.get("outmail_session_cookie") or ""),
+        "outmail_proxy": str(defaults.get("outmail_proxy") or ""),
+        "outmail_plus_alias": bool(defaults.get("outmail_plus_alias", True)),
+        "outmail_plus_alias_count": int(defaults.get("outmail_plus_alias_count") or 1),
+        "outmail_alias_suffix_len": int(defaults.get("outmail_alias_suffix_len") or 6),
+        "outmail_fetch_top": int(defaults.get("outmail_fetch_top") or 10),
+        "outmail_poll_interval_sec": int(defaults.get("outmail_poll_interval_sec") or 5),
+        "outmail_poll_timeout_sec": int(defaults.get("outmail_poll_timeout_sec") or 180),
+        "outmail_since_padding_sec": int(defaults.get("outmail_since_padding_sec") or 30),
+        "outmail_from_filter": str(defaults.get("outmail_from_filter") or "x.ai"),
+        "outmail_subject_filter": str(defaults.get("outmail_subject_filter") or "xAI"),
+        "outmail_group_id": (lambda v: None if v in (None, "") else v)(defaults.get("outmail_group_id")),
+        "outmail_anonymous_enabled": bool(defaults.get("outmail_anonymous_enabled", False)),
+        "outmail_anonymous_provider": str(defaults.get("outmail_anonymous_provider") or "cloudflare"),
+        "outmail_anonymous_domain": str(defaults.get("outmail_anonymous_domain") or ""),
+        "outmail_anonymous_username_prefix": str(defaults.get("outmail_anonymous_username_prefix") or ""),
+        "outmail_anonymous_password": str(defaults.get("outmail_anonymous_password") or ""),
+        "outmail_anonymous_delete_after": bool(defaults.get("outmail_anonymous_delete_after", False)),
+        "outmail_exclude_used": bool(defaults.get("outmail_exclude_used", True)),
+        "outmail_used_file": str(defaults.get("outmail_used_file") or "outmail_used_mailboxes.txt"),
         "cpa_export_enabled": defaults.get("cpa_export_enabled", True) if payload.cpa_export_enabled is None else payload.cpa_export_enabled,
+        "cpa_prefer_sso_oauth": bool(defaults.get("cpa_prefer_sso_oauth", True)),
+        "cpa_probe_after_write": bool(defaults.get("cpa_probe_after_write", True)),
+        "cpa_probe_delay_sec": float(defaults.get("cpa_probe_delay_sec", 5) or 5),
+        "cpa_probe_required": bool(defaults.get("cpa_probe_required", False)),
         "cpa_auth_dir": defaults.get("cpa_auth_dir", "./cpa_auths") if payload.cpa_auth_dir is None else payload.cpa_auth_dir.strip(),
         "cpa_copy_to_hotload": defaults.get("cpa_copy_to_hotload", False) if payload.cpa_copy_to_hotload is None else payload.cpa_copy_to_hotload,
         "cpa_hotload_dir": defaults.get("cpa_hotload_dir", "") if payload.cpa_hotload_dir is None else payload.cpa_hotload_dir.strip(),
@@ -1247,6 +1355,24 @@ def sync_account_records_for_task(row: sqlite3.Row) -> None:
             )
             if can_update:
                 uploaded_at = now_iso() if cpa_status == "uploaded" else str(row_get(existing, "cpa_uploaded_at", "") or "")
+                token_status = str(cpa_record.get("token_status") or "").strip()
+                live = cpa_record.get("liveness") if isinstance(cpa_record.get("liveness"), dict) else {}
+                if not token_status:
+                    if live.get("alive") is True:
+                        token_status = "alive"
+                    elif live.get("alive") is False:
+                        token_status = "dead"
+                sso_alive_raw = cpa_record.get("sso_alive")
+                if sso_alive_raw is None and isinstance(live.get("sso"), dict):
+                    sso_alive_raw = live.get("sso", {}).get("alive")
+                sso_alive_i: int | None
+                if sso_alive_raw is True or sso_alive_raw == 1 or sso_alive_raw == "1":
+                    sso_alive_i = 1
+                elif sso_alive_raw is False or sso_alive_raw == 0 or sso_alive_raw == "0":
+                    sso_alive_i = 0
+                else:
+                    sso_alive_i = None
+                renew_src = str(cpa_record.get("mode") or "").strip()
                 execute_no_return(
                     """
                     UPDATE accounts
@@ -1264,6 +1390,37 @@ def sync_account_records_for_task(row: sqlite3.Row) -> None:
                         sso,
                     ),
                 )
+                if token_status or sso_alive_i is not None or renew_src:
+                    execute_no_return(
+                        """
+                        UPDATE accounts
+                        SET token_status = CASE WHEN ? != '' THEN ? ELSE token_status END,
+                            token_checked_at = CASE WHEN ? != '' THEN ? ELSE token_checked_at END,
+                            token_error = CASE WHEN ? != '' THEN ? ELSE token_error END,
+                            sso_alive = COALESCE(?, sso_alive),
+                            last_renew_source = CASE WHEN ? != '' THEN ? ELSE last_renew_source END,
+                            last_renew_at = CASE WHEN ? != '' THEN ? ELSE last_renew_at END
+                        WHERE task_id = ? AND email = ? AND sso = ?
+                        """,
+                        (
+                            token_status,
+                            token_status,
+                            token_status,
+                            now_iso(),
+                            cpa_error,
+                            cpa_error,
+                            sso_alive_i,
+                            renew_src,
+                            renew_src,
+                            renew_src,
+                            now_iso(),
+                            int(row["id"]),
+                            email,
+                            sso,
+                        ),
+                    )
+
+
 
 
 def sync_all_account_records() -> None:
@@ -1330,6 +1487,13 @@ def serialize_account(row: sqlite3.Row) -> dict[str, Any]:
         "cpa_error": row_get(row, "cpa_error", "") or "",
         "cpa_log": row_get(row, "cpa_log", "") or "",
         "cpa_updated_at": row_get(row, "cpa_updated_at", "") or "",
+        "token_status": row_get(row, "token_status", "unknown") or "unknown",
+        "token_expires_at": row_get(row, "token_expires_at", "") or "",
+        "token_checked_at": row_get(row, "token_checked_at", "") or "",
+        "token_error": row_get(row, "token_error", "") or "",
+        "sso_alive": row_get(row, "sso_alive", None),
+        "last_renew_source": row_get(row, "last_renew_source", "") or "",
+        "last_renew_at": row_get(row, "last_renew_at", "") or "",
     }
 
 
@@ -2011,65 +2175,44 @@ def _shutdown_shared_mint_browser() -> None:
 
 
 def _process_one_cpa_job(account_id: int, mode: str) -> tuple[bool, str, str]:
-    """Run one account with retries. Returns (ok, email, error)."""
-    defaults = merged_defaults()
-    retries = _as_nonneg_int(defaults.get("cpa_batch_retry_count"), 1, maximum=5)
-    attempts = retries + 1
-
-    row = fetch_one("SELECT * FROM accounts WHERE id = ?", (account_id,))
-    email = str(row_get(row, "email", "") or "").strip() if row else ""
-    last_error = ""
-
-    for attempt in range(1, attempts + 1):
-        if cpa_cancel_event.is_set():
-            return False, email, "cancelled"
-
-        if attempt > 1:
-            append_account_cpa_log(account_id, f"第 {attempt}/{attempts} 次重试")
-            print(f"[account-cpa-queue] retry {attempt}/{attempts} id={account_id}", flush=True)
-
-        if mode == "push_only":
-            execute_no_return(
-                "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
-                ("uploading", now_iso(), account_id),
-            )
-            append_account_cpa_log(account_id, f"队列处理 CPA 推送: {email or account_id}")
-            ok = run_account_cpa_upload(account_id, manage_job=False)
-        elif mode == "push_sub2api":
-            execute_no_return(
-                "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
-                ("uploading", now_iso(), account_id),
-            )
-            append_account_cpa_log(account_id, f"队列处理 Sub2API 推送: {email or account_id}")
-            ok = run_account_sub2api_upload(account_id, manage_job=False)
-        else:
-            execute_no_return(
-                "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
-                ("running", now_iso(), account_id),
-            )
-            append_account_cpa_log(
-                account_id,
-                f"队列处理授权并推送（全局单线程/单浏览器）: {email or account_id}",
-            )
-            ok = run_account_cpa_export(account_id, manage_job=False)
-
-        if ok:
-            return True, email, ""
-
-        row2 = fetch_one("SELECT cpa_status, cpa_error FROM accounts WHERE id = ?", (account_id,))
-        last_error = str(row_get(row2, "cpa_error", "") or "failed") if row2 else "failed"
-        last_status = str(row_get(row2, "cpa_status", "") or "") if row2 else ""
-        # 测活失败/账号缺字段等无需无意义重试授权
-        permanent = last_status == "invalid" or any(
-            token in last_error
-            for token in ("测活失败", "health_check", "缺少邮箱", "缺少密码", "未找到已生成")
+    row = account_row(account_id)
+    email = str(row_get(row, "email", "") or "")
+    if mode == "push_only":
+        ok = run_account_cpa_upload(account_id, manage_job=False)
+        status = "uploaded" if ok else "failed"
+    elif mode == "push_sub2api":
+        ok = run_account_sub2api_upload(account_id, manage_job=False)
+        status = "uploaded" if ok else "failed"
+    elif mode == "oauth_only":
+        result = run_account_sso_oauth(account_id, manage_job=False)
+        ok = bool(result.get("ok"))
+        latest = fetch_one("SELECT cpa_status FROM accounts WHERE id = ?", (account_id,))
+        status = str(row_get(latest, "cpa_status", "failed") or ("generated" if ok else "failed"))
+    elif mode == "probe_only":
+        result = run_account_token_probe(account_id, probe_api=True, probe_sso=True, auto_refresh=False)
+        ok = bool(result.get("ok") or result.get("alive"))
+        latest = fetch_one(
+            "SELECT cpa_status, token_status, cpa_error FROM accounts WHERE id = ?",
+            (account_id,),
         )
-        if permanent:
-            return False, email, last_error
-        if attempt < attempts and not cpa_cancel_event.is_set():
-            time.sleep(min(2 * attempt, 6))
-
-    return False, email, last_error
+        # Prefer persisted account status after probe (invalid on failure)
+        status = str(
+            row_get(latest, "cpa_status", "")
+            or result.get("token_status")
+            or ("alive" if ok else "invalid")
+        )
+        if not ok and status not in {"invalid", "failed"}:
+            status = "invalid"
+    elif mode == "refresh_only":
+        result = run_account_token_refresh(account_id, force=True, allow_sso_fallback=True)
+        ok = bool(result.get("ok"))
+        status = "refreshed" if ok else "failed"
+    else:
+        ok = run_account_cpa_export(account_id, manage_job=False)
+        # re-read status written by export
+        latest = fetch_one("SELECT cpa_status FROM accounts WHERE id = ?", (account_id,))
+        status = str(row_get(latest, "cpa_status", "failed") or ("generated" if ok else "failed"))
+    return ok, email, status
 
 
 def cpa_worker_loop() -> None:
@@ -2185,6 +2328,466 @@ def ensure_cpa_worker() -> None:
         _ensure_cpa_worker_locked()
 
 
+
+
+def _ensure_cpa_xai_importable() -> None:
+    """Make project cpa_xai importable for console token/sso helpers."""
+    candidates = [
+        SOURCE_PROJECT,
+        CPA_WORKER_DIR,
+        SOURCE_PROJECT / "apps" / "cpa-worker",
+    ]
+    for root in candidates:
+        if (root / "cpa_xai" / "__init__.py").is_file():
+            root_s = str(root)
+            if root_s not in sys.path:
+                sys.path.insert(0, root_s)
+            return
+    # last resort: package next to console
+    local = REPO_ROOT / "cpa_xai"
+    if local.is_dir():
+        root_s = str(REPO_ROOT)
+        if root_s not in sys.path:
+            sys.path.insert(0, root_s)
+
+
+def _account_proxy_for_token_ops(config: dict[str, Any] | None = None) -> str:
+    cfg = config or build_account_cpa_config()
+    proxy = str(
+        cfg.get("cpa_proxy")
+        or cfg.get("browser_proxy")
+        or cfg.get("proxy")
+        or ""
+    ).strip()
+    return proxy
+
+
+def _update_account_token_fields(
+    account_id: int,
+    *,
+    token_status: str | None = None,
+    token_expires_at: str | None = None,
+    token_error: str | None = None,
+    sso_alive: bool | int | None = None,
+    last_renew_source: str | None = None,
+    last_renew_at: str | None = None,
+    cpa_path: str | None = None,
+    cpa_status: str | None = None,
+) -> None:
+    fields: list[str] = ["token_checked_at = ?"]
+    values: list[Any] = [now_iso()]
+    if token_status is not None:
+        fields.append("token_status = ?")
+        values.append(token_status)
+    if token_expires_at is not None:
+        fields.append("token_expires_at = ?")
+        values.append(token_expires_at)
+    if token_error is not None:
+        fields.append("token_error = ?")
+        values.append(token_error)
+    if sso_alive is not None:
+        fields.append("sso_alive = ?")
+        values.append(1 if bool(sso_alive) else 0)
+    if last_renew_source is not None:
+        fields.append("last_renew_source = ?")
+        values.append(last_renew_source)
+    if last_renew_at is not None:
+        fields.append("last_renew_at = ?")
+        values.append(last_renew_at)
+    if cpa_path is not None:
+        fields.append("cpa_path = ?")
+        values.append(cpa_path)
+    if cpa_status is not None:
+        fields.append("cpa_status = ?")
+        values.append(cpa_status)
+    fields.append("cpa_updated_at = ?")
+    values.append(now_iso())
+    values.append(account_id)
+    execute_no_return(
+        f"UPDATE accounts SET {', '.join(fields)} WHERE id = ?",
+        tuple(values),
+    )
+
+
+def run_account_token_probe(
+    account_id: int,
+    *,
+    probe_api: bool = True,
+    probe_sso: bool = True,
+    auto_refresh: bool = False,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    """???SSO cookie + ?? API chat/completions???????"""
+    row = account_row(account_id)
+    email = str(row_get(row, "email", "") or "")
+    sso = str(row_get(row, "sso", "") or "").strip()
+    cfg = build_account_cpa_config()
+    proxy = _account_proxy_for_token_ops(cfg)
+    auth_path = resolve_account_cpa_path(row)
+
+    def account_log(message: str) -> None:
+        print(f"[account-probe:{account_id}] {message}", flush=True)
+        append_account_cpa_log(account_id, message)
+
+    account_log(
+        f"???? email={email} probe_api={probe_api} probe_sso={probe_sso} "
+        f"auto_refresh={auto_refresh} force_refresh={force_refresh}"
+    )
+    try:
+        _ensure_cpa_xai_importable()
+        from cpa_xai.token_maintain import check_account_liveness  # type: ignore
+
+        result = check_account_liveness(
+            auth_path=auth_path,
+            sso=sso or None,
+            proxy=proxy or None,
+            probe_api=probe_api and auth_path is not None,
+            probe_sso=probe_sso and bool(sso),
+            auto_refresh=auto_refresh and auth_path is not None,
+            force_refresh=force_refresh,
+            skew_seconds=float(cfg.get("cpa_token_refresh_skew_sec", 300) or 300),
+            model=str(cfg.get("cpa_health_check_model") or "grok-4.5"),
+            timeout=float(cfg.get("cpa_health_check_timeout", 15) or 15),
+            log=account_log,
+        )
+    except Exception as exc:  # noqa: BLE001
+        account_log(f"????: {exc}")
+        _update_account_token_fields(
+            account_id,
+            token_status="error",
+            token_error=str(exc)[:500],
+            sso_alive=None,
+            cpa_status="invalid",
+        )
+        execute_no_return(
+            "UPDATE accounts SET cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
+            (str(exc)[:500], now_iso(), account_id),
+        )
+        return {"ok": False, "account_id": account_id, "error": str(exc), "token_status": "error", "cpa_status": "invalid"}
+
+    sso_res = result.get("sso") if isinstance(result.get("sso"), dict) else {}
+    health = result.get("health") if isinstance(result.get("health"), dict) else {}
+    refresh = result.get("refresh") if isinstance(result.get("refresh"), dict) else {}
+    auth = result.get("auth") if isinstance(result.get("auth"), dict) else None
+    expires_at = ""
+    if auth:
+        expires_at = str(auth.get("expired") or "")
+    elif auth_path:
+        try:
+            import json as _json
+            data = _json.loads(Path(auth_path).read_text(encoding="utf-8"))
+            expires_at = str(data.get("expired") or "")
+        except Exception:
+            expires_at = ""
+
+    if result.get("alive"):
+        status = "alive"
+    elif sso_res.get("alive") is False and not auth_path:
+        status = "sso_dead"
+    elif health and health.get("ok") is False:
+        status = "api_dead"
+    elif sso_res.get("alive") is False:
+        status = "sso_dead"
+    else:
+        status = "dead" if result.get("ok") is False else "unknown"
+
+    renew_source = refresh.get("source") if refresh.get("renewed") else None
+    err_text = str(result.get("error") or health.get("message") or "")[:500]
+    # Map liveness into account CPA status so UI "CPA" column reflects probe outcome.
+    # alive  -> keep generated/uploaded if already authorized; else mark generated when file exists
+    # dead   -> invalid (??????????)
+    cpa_status_update: str | None = None
+    row_now = fetch_one("SELECT cpa_status, cpa_path FROM accounts WHERE id = ?", (account_id,))
+    prev_cpa = str(row_get(row_now, "cpa_status", "not_started") or "not_started")
+    path_now = str(auth_path or row_get(row_now, "cpa_path", "") or "").strip()
+
+    if result.get("alive"):
+        if prev_cpa in {"not_started", "failed", "invalid", "queued", "running"} and path_now:
+            cpa_status_update = "generated"
+        elif prev_cpa == "invalid" and path_now:
+            # recovered by probe
+            cpa_status_update = "generated"
+        # uploaded/generated stay as-is on success
+    else:
+        # probe failed: mark account invalid so it is visible and skippable
+        if prev_cpa not in {"queued", "running"}:
+            cpa_status_update = "invalid"
+        # also clear "uploaded" illusion when API is dead
+        if prev_cpa in {"uploaded", "generated", "failed", "not_started", "invalid"}:
+            cpa_status_update = "invalid"
+
+    _update_account_token_fields(
+        account_id,
+        token_status=status,
+        token_expires_at=expires_at,
+        token_error=err_text,
+        sso_alive=sso_res.get("alive") if "alive" in sso_res else None,
+        last_renew_source=str(renew_source or "") or None,
+        last_renew_at=now_iso() if renew_source else None,
+        cpa_path=path_now or None,
+        cpa_status=cpa_status_update,
+    )
+    if cpa_status_update == "invalid" and err_text:
+        execute_no_return(
+            "UPDATE accounts SET cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
+            (err_text, now_iso(), account_id),
+        )
+    elif result.get("alive") and cpa_status_update in {"generated", "uploaded"}:
+        execute_no_return(
+            "UPDATE accounts SET cpa_error = '', cpa_updated_at = ? WHERE id = ?",
+            (now_iso(), account_id),
+        )
+    elif result.get("alive") and prev_cpa in {"generated", "uploaded"}:
+        # clear previous probe error on success without status change
+        execute_no_return(
+            "UPDATE accounts SET cpa_error = '', cpa_updated_at = ? WHERE id = ?",
+            (now_iso(), account_id),
+        )
+
+    account_log(
+        f"???? status={status} cpa={cpa_status_update or prev_cpa} "
+        f"alive={result.get('alive')} sso={sso_res.get('alive')} health={health.get('ok')}"
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "alive": bool(result.get("alive")),
+        "account_id": account_id,
+        "email": email,
+        "token_status": status,
+        "cpa_status": cpa_status_update or prev_cpa,
+        "token_expires_at": expires_at,
+        "result": result,
+    }
+
+
+def run_account_token_refresh(
+    account_id: int,
+    *,
+    force: bool = True,
+    allow_sso_fallback: bool = True,
+) -> dict[str, Any]:
+    """Token ????? refresh_token????? SSO ?? SSO ????"""
+    row = account_row(account_id)
+    email = str(row_get(row, "email", "") or "")
+    sso = str(row_get(row, "sso", "") or "").strip()
+    cfg = build_account_cpa_config()
+    proxy = _account_proxy_for_token_ops(cfg)
+    auth_path = resolve_account_cpa_path(row)
+
+    def account_log(message: str) -> None:
+        print(f"[account-refresh:{account_id}] {message}", flush=True)
+        append_account_cpa_log(account_id, message)
+
+    if auth_path is None and not (allow_sso_fallback and sso):
+        msg = "??????? SSO?????"
+        account_log(msg)
+        _update_account_token_fields(account_id, token_status="error", token_error=msg)
+        return {"ok": False, "account_id": account_id, "error": msg}
+
+    account_log(f"?? Token ?? force={force} sso_fallback={allow_sso_fallback}")
+    try:
+        _ensure_cpa_xai_importable()
+        from cpa_xai.token_maintain import (  # type: ignore
+            refresh_cpa_auth,
+            refresh_cpa_auth_file,
+            load_cpa_auth_file,
+        )
+        from cpa_xai.sso_oauth import sso_oauth_to_cpa_auth  # type: ignore
+        from cpa_xai.writer import write_cpa_xai_auth  # type: ignore
+
+        if auth_path is not None:
+            result = refresh_cpa_auth_file(
+                auth_path,
+                proxy=proxy or None,
+                skew_seconds=float(cfg.get("cpa_token_refresh_skew_sec", 300) or 300),
+                force=force,
+                sso=sso or None,
+                allow_sso_fallback=allow_sso_fallback and bool(sso),
+                persist=True,
+                log=account_log,
+            )
+            path_value = str(result.get("path") or auth_path)
+        else:
+            # No existing file: mint via SSO only
+            account_log("?????????? SSO OAuth ??")
+            payload = sso_oauth_to_cpa_auth(
+                sso,
+                email=email,
+                proxy=proxy or None,
+                base_url=str(cfg.get("cpa_base_url") or "https://cli-chat-proxy.grok.com/v1"),
+                log=account_log,
+            )
+            out_dir = Path(str(cfg.get("cpa_auth_dir") or (RUNTIME_DIR / "cpa_auths"))).expanduser()
+            if not out_dir.is_absolute():
+                out_dir = (SOURCE_PROJECT / out_dir).resolve()
+            path_obj = write_cpa_xai_auth(out_dir, payload)
+            path_value = str(path_obj)
+            result = {
+                "ok": True,
+                "renewed": True,
+                "source": "sso",
+                "auth": payload,
+                "path": path_value,
+            }
+    except Exception as exc:  # noqa: BLE001
+        account_log(f"????: {exc}")
+        _update_account_token_fields(
+            account_id,
+            token_status="refresh_failed",
+            token_error=str(exc)[:500],
+        )
+        return {"ok": False, "account_id": account_id, "error": str(exc)}
+
+    auth = result.get("auth") if isinstance(result.get("auth"), dict) else {}
+    expires_at = str(auth.get("expired") or "")
+    if result.get("ok") and (result.get("renewed") or result.get("skipped")):
+        status = "alive" if not result.get("permanent") else "refresh_invalid"
+        if result.get("skipped"):
+            status = "alive"
+        source = str(result.get("source") or "")
+        _update_account_token_fields(
+            account_id,
+            token_status=status if result.get("ok") else "refresh_failed",
+            token_expires_at=expires_at,
+            token_error=str(result.get("error") or "")[:500],
+            last_renew_source=source or None,
+            last_renew_at=now_iso() if result.get("renewed") else None,
+            cpa_path=path_value,
+            cpa_status="generated" if result.get("renewed") else None,
+        )
+        account_log(
+            f"???? ok={result.get('ok')} renewed={result.get('renewed')} "
+            f"source={result.get('source')} exp={expires_at}"
+        )
+        return {
+            "ok": bool(result.get("ok")),
+            "account_id": account_id,
+            "email": email,
+            "renewed": bool(result.get("renewed")),
+            "skipped": bool(result.get("skipped")),
+            "source": result.get("source"),
+            "path": path_value,
+            "token_expires_at": expires_at,
+            "result": {k: v for k, v in result.items() if k != "auth"},
+        }
+
+    _update_account_token_fields(
+        account_id,
+        token_status="refresh_invalid" if result.get("permanent") else "refresh_failed",
+        token_expires_at=expires_at,
+        token_error=str(result.get("error") or "refresh_failed")[:500],
+        cpa_path=path_value if "path_value" in locals() else None,
+    )
+    account_log(f"????: {result.get('error')}")
+    return {
+        "ok": False,
+        "account_id": account_id,
+        "email": email,
+        "error": result.get("error") or "refresh_failed",
+        "result": {k: v for k, v in result.items() if k != "auth"},
+    }
+
+
+def run_account_sso_oauth(
+    account_id: int,
+    *,
+    manage_job: bool = False,
+) -> dict[str, Any]:
+    """OAuth ?????SSO cookie ? device flow ? ? CPA ?????"""
+    row = account_row(account_id)
+    email = str(row_get(row, "email", "") or "").strip()
+    sso = str(row_get(row, "sso", "") or "").strip()
+    cfg = build_account_cpa_config()
+
+    def account_log(message: str) -> None:
+        print(f"[account-oauth:{account_id}] {message}", flush=True)
+        append_account_cpa_log(account_id, message)
+
+    if not email or not sso:
+        msg = "??????? SSO??? OAuth ??"
+        account_log(msg)
+        execute_no_return(
+            "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
+            ("failed", msg, now_iso(), account_id),
+        )
+        return {"ok": False, "account_id": account_id, "error": msg}
+
+    execute_no_return(
+        "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
+        ("running", now_iso(), account_id),
+    )
+    account_log("?? SSO OAuth ? HTTP ??")
+    try:
+        mod = load_cpa_export_module()
+        if hasattr(mod, "export_cpa_xai_via_sso"):
+            result = mod.export_cpa_xai_via_sso(
+                email,
+                sso,
+                config=cfg,
+                log_callback=account_log,
+            )
+        else:
+            # fallback: export_cpa_xai_for_account with prefer sso
+            result = mod.export_cpa_xai_for_account(
+                email,
+                str(row_get(row, "password", "") or "unused"),
+                sso=sso,
+                config={**cfg, "cpa_prefer_sso_oauth": True},
+                log_callback=account_log,
+            )
+        if not result.get("ok") or not result.get("path"):
+            raise RuntimeError(result.get("error") or "SSO OAuth failed")
+        path_value = str(result["path"])
+        expires_at = ""
+        try:
+            import json as _json
+            data = _json.loads(Path(path_value).read_text(encoding="utf-8"))
+            expires_at = str(data.get("expired") or "")
+        except Exception:
+            pass
+        execute_no_return(
+            """
+            UPDATE accounts
+            SET cpa_status = ?, cpa_path = ?, cpa_error = '', cpa_updated_at = ?,
+                token_status = ?, token_expires_at = ?, token_checked_at = ?,
+                last_renew_source = ?, last_renew_at = ?, sso_alive = 1, token_error = ''
+            WHERE id = ?
+            """,
+            (
+                "generated",
+                path_value,
+                now_iso(),
+                "alive",
+                expires_at,
+                now_iso(),
+                "sso_oauth",
+                now_iso(),
+                account_id,
+            ),
+        )
+        account_log(f"SSO OAuth ??: {path_value}")
+        return {
+            "ok": True,
+            "account_id": account_id,
+            "email": email,
+            "path": path_value,
+            "token_expires_at": expires_at,
+            "mode": result.get("mode") or "sso_oauth",
+        }
+    except Exception as exc:  # noqa: BLE001
+        account_log(f"SSO OAuth ??: {exc}")
+        execute_no_return(
+            "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ?, token_status = ?, token_error = ?, token_checked_at = ? WHERE id = ?",
+            ("failed", str(exc)[:500], now_iso(), "oauth_failed", str(exc)[:500], now_iso(), account_id),
+        )
+        return {"ok": False, "account_id": account_id, "error": str(exc)}
+    finally:
+        if manage_job:
+            with cpa_jobs_lock:
+                cpa_jobs.pop(account_id, None)
+
+
+
 def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
     """Validate and enqueue accounts into the global sequential CPA queue."""
     mode = str(mode or "authorize_and_push").strip()
@@ -2223,7 +2826,33 @@ def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
                 rejected.append({
                     "id": account_id,
                     "email": email,
-                    "reason": "未找到已生成的 CPA 授权文件，请先生成授权",
+                    "reason": "??????? CPA ???????????",
+                })
+                continue
+        elif mode in {"probe_only", "refresh_only"}:
+            sso = str(row_get(row, "sso", "") or "").strip()
+            has_file = resolve_account_cpa_path(row) is not None
+            if mode == "probe_only" and not sso and not has_file:
+                rejected.append({
+                    "id": account_id,
+                    "email": email,
+                    "reason": "???? SSO ???????????",
+                })
+                continue
+            if mode == "refresh_only" and not has_file and not sso:
+                rejected.append({
+                    "id": account_id,
+                    "email": email,
+                    "reason": "????????? SSO?????",
+                })
+                continue
+        elif mode == "oauth_only":
+            sso = str(row_get(row, "sso", "") or "").strip()
+            if not email or not sso:
+                rejected.append({
+                    "id": account_id,
+                    "email": email,
+                    "reason": "??????? SSO??? OAuth ??",
                 })
                 continue
         else:
@@ -2233,7 +2862,7 @@ def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
                 rejected.append({
                     "id": account_id,
                     "email": email,
-                    "reason": "账号缺少邮箱、密码或 SSO，无法执行 CPA 授权",
+                    "reason": "?????????? SSO????? CPA ??",
                 })
                 continue
         candidates.append((account_id, email))
@@ -3137,6 +3766,62 @@ def upload_existing_account_sub2api(account_id: int) -> dict[str, Any]:
     }
 
 
+
+
+
+
+class AccountMaintainBatch(BaseModel):
+    account_ids: list[int] = Field(default_factory=list)
+    mode: str = "probe_only"  # probe_only | refresh_only | oauth_only
+    force: bool = True
+
+
+@app.post("/api/accounts/{account_id}/probe")
+def probe_account(account_id: int) -> dict[str, Any]:
+    account_row(account_id)
+    return run_account_token_probe(
+        account_id,
+        probe_api=True,
+        probe_sso=True,
+        auto_refresh=False,
+        force_refresh=False,
+    )
+
+
+@app.post("/api/accounts/{account_id}/refresh")
+def refresh_account_token(account_id: int, force: bool = Query(True)) -> dict[str, Any]:
+    account_row(account_id)
+    return run_account_token_refresh(account_id, force=force, allow_sso_fallback=True)
+
+
+@app.post("/api/accounts/{account_id}/oauth")
+def oauth_account(account_id: int) -> dict[str, Any]:
+    account_row(account_id)
+    # queue for serial processing when many; single call runs immediately if idle preferred:
+    result = enqueue_cpa_jobs([account_id], "oauth_only")
+    if result["accepted_count"] == 0:
+        # if already busy with same account, still try direct? reject
+        reason = ""
+        if result["skipped"]:
+            reason = result["skipped"][0].get("reason") or "??????????"
+        elif result["rejected"]:
+            reason = result["rejected"][0].get("reason") or "??????"
+        else:
+            reason = "??????"
+        raise HTTPException(status_code=409 if result["skipped"] else 400, detail=reason)
+    return {"ok": True, "status": "queued", "account_id": account_id, "queue": result.get("queue")}
+
+
+@app.post("/api/accounts/maintain/batch")
+def batch_account_maintain(payload: AccountMaintainBatch) -> dict[str, Any]:
+    mode = (payload.mode or "probe_only").strip()
+    if mode not in {"probe_only", "refresh_only", "oauth_only"}:
+        raise HTTPException(status_code=400, detail="mode ??? probe_only / refresh_only / oauth_only")
+    ids = [int(x) for x in (payload.account_ids or []) if int(x) > 0]
+    if not ids:
+        raise HTTPException(status_code=400, detail="account_ids ????")
+    # probe/refresh can run concurrent-ish but reuse CPA queue for backpressure & UI progress
+    return enqueue_cpa_jobs(ids, mode)
 
 
 @app.get("/api/tasks")
