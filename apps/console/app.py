@@ -3359,7 +3359,18 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Grok Register Console", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
+class _NoCacheStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):  # type: ignore[override]
+        response = await super().get_response(path, scope)
+        # Always revalidate console assets so syntax fixes apply immediately.
+        if path.endswith((".js", ".css")):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
+
+app.mount("/static", _NoCacheStaticFiles(directory=str(APP_DIR / "static")), name="static")
 
 
 class LoginPayload(BaseModel):
