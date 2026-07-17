@@ -48,6 +48,9 @@
   const accountsDownloadBtnEl = document.getElementById("accountsDownloadBtn");
   const accountsDeleteBtnEl = document.getElementById("accountsDeleteBtn");
   const accountsCpaBatchBtnEl = document.getElementById("accountsCpaBatchBtn");
+  const accountsProbeBatchBtnEl = document.getElementById("accountsProbeBatchBtn");
+  const accountsRefreshTokenBatchBtnEl = document.getElementById("accountsRefreshTokenBatchBtn");
+  const accountsOauthBatchBtnEl = document.getElementById("accountsOauthBatchBtn");
   const accountsCpaPushBatchBtnEl = document.getElementById("accountsCpaPushBatchBtn");
   const accountsSub2apiPushBatchBtnEl = document.getElementById("accountsSub2apiPushBatchBtn");
   const accountsCpaCancelBtnEl = document.getElementById("accountsCpaCancelBtn");
