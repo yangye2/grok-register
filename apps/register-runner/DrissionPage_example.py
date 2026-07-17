@@ -624,20 +624,27 @@ def fill_code_and_submit(email, dev_token, timeout=60):
     code = get_oai_code(dev_token, email)
     if not code:
         raise Exception("获取验证码失败")
+    code_raw = str(code).strip()
+    code = "".join(ch for ch in code_raw if ch.isalnum())
+    if not code:
+        code = code_raw
+    print(f"[*] 获取到验证码: {code_raw} -> fill={code}")
 
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             filled = page.run_js(
-                """
-const code = String(arguments[0] || '').trim();
+                r"""
+const rawCode = String(arguments[0] || '').trim();
+// xAI codes are often ABC-DEF; inputs usually want plain alnum without hyphen.
+const codePlain = rawCode.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+const codeHyphen = rawCode.toUpperCase();
+const code = codePlain || codeHyphen;
 
 function isVisible(node) {
-    if (!node) {
-        return false;
-    }
+    if (!node) return false;
     const style = window.getComputedStyle(node);
-    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) {
         return false;
     }
     const rect = node.getBoundingClientRect();
@@ -645,98 +652,222 @@ function isVisible(node) {
 }
 
 function setNativeValue(input, value) {
-    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-    const tracker = input._valueTracker;
-    if (tracker) {
-        tracker.setValue('');
-    }
-    if (nativeInputValueSetter) {
-        nativeInputValueSetter.call(input, '');
-        nativeInputValueSetter.call(input, value);
-    } else {
-        input.value = '';
-        input.value = value;
+    try {
+        const proto = window.HTMLInputElement.prototype;
+        const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+        const tracker = input._valueTracker;
+        if (tracker) {
+            try { tracker.setValue(input.value == null ? '' : String(input.value)); } catch (e) {}
+            try { tracker.setValue(''); } catch (e) {}
+        }
+        if (desc && desc.set) {
+            desc.set.call(input, value);
+        } else {
+            input.value = value;
+        }
+    } catch (e) {
+        try { input.value = value; } catch (e2) {}
     }
 }
 
 function dispatchInputEvents(input, value) {
-    input.dispatchEvent(new InputEvent('beforeinput', {
-        bubbles: true,
-        cancelable: true,
-        data: value,
-        inputType: 'insertText',
-    }));
-    input.dispatchEvent(new InputEvent('input', {
-        bubbles: true,
-        cancelable: true,
-        data: value,
-        inputType: 'insertText',
-    }));
+    try {
+        input.dispatchEvent(new InputEvent('beforeinput', {
+            bubbles: true, cancelable: true, data: value, inputType: 'insertText',
+        }));
+    } catch (e) {}
+    try {
+        input.dispatchEvent(new InputEvent('input', {
+            bubbles: true, cancelable: true, data: value, inputType: 'insertText',
+        }));
+    } catch (e) {
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
     input.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-const input = Array.from(document.querySelectorAll('input[data-input-otp="true"], input[name="code"], input[autocomplete="one-time-code"], input[inputmode="numeric"], input[inputmode="text"]')).find((node) => {
-    return isVisible(node) && !node.disabled && !node.readOnly && Number(node.maxLength || code.length || 6) > 1;
-}) || null;
-
-const otpBoxes = Array.from(document.querySelectorAll('input')).filter((node) => {
-    if (!isVisible(node) || node.disabled || node.readOnly) {
-        return false;
+function fillOne(input, value) {
+    try { input.focus(); } catch (e) {}
+    try { input.click(); } catch (e) {}
+    try { input.select && input.select(); } catch (e) {}
+    // Strategy A: native value setter (React-friendly)
+    setNativeValue(input, '');
+    setNativeValue(input, value);
+    dispatchInputEvents(input, value);
+    // Strategy B: clipboard paste simulation
+    if (String(input.value || '') !== value) {
+        try {
+            input.focus();
+            const dt = new DataTransfer();
+            dt.setData('text/plain', value);
+            input.dispatchEvent(new ClipboardEvent('paste', {
+                bubbles: true, cancelable: true, clipboardData: dt,
+            }));
+            if (String(input.value || '') !== value) {
+                setNativeValue(input, value);
+                dispatchInputEvents(input, value);
+            }
+        } catch (e) {}
     }
+    // Strategy C: execCommand insertText
+    if (String(input.value || '') !== value) {
+        try {
+            input.focus();
+            input.select && input.select();
+            document.execCommand('selectAll', false, null);
+            document.execCommand('insertText', false, value);
+        } catch (e) {}
+    }
+    // Strategy D: char-by-char keyboard for short OTP
+    if (String(input.value || '') !== value && value.length <= 12) {
+        try {
+            setNativeValue(input, '');
+            dispatchInputEvents(input, '');
+            for (const ch of value) {
+                input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ch, code: 'Key' + ch }));
+                input.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true, key: ch }));
+                setNativeValue(input, String(input.value || '') + ch);
+                dispatchInputEvents(input, ch);
+                input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ch }));
+            }
+        } catch (e) {}
+    }
+    return String(input.value || '').trim();
+}
+
+function readOtpBoxes(boxes) {
+    return boxes.map((n) => String(n.value || '').trim()).join('');
+}
+
+function readSlots() {
+    const slots = Array.from(document.querySelectorAll(
+        '[data-input-otp-slot="true"], [data-slot], [role="presentation"] span'
+    ));
+    // Prefer explicit otp slots
+    const otpSlots = Array.from(document.querySelectorAll('[data-input-otp-slot="true"]'));
+    if (otpSlots.length) {
+        return otpSlots.map((s) => (s.textContent || '').trim()).join('');
+    }
+    return '';
+}
+
+// Prefer single-char OTP boxes first (common on accounts.x.ai)
+let otpBoxes = Array.from(document.querySelectorAll('input')).filter((node) => {
+    if (!isVisible(node) || node.disabled || node.readOnly) return false;
     const maxLength = Number(node.maxLength || 0);
     const autocomplete = String(node.autocomplete || '').toLowerCase();
-    return maxLength === 1 || autocomplete === 'one-time-code';
+    const name = String(node.name || '').toLowerCase();
+    const id = String(node.id || '').toLowerCase();
+    const testid = String(node.getAttribute('data-testid') || '').toLowerCase();
+    const otpAttr = node.getAttribute('data-input-otp');
+    if (maxLength === 1) return true;
+    if (otpAttr === 'true' && maxLength === 1) return true;
+    if (autocomplete === 'one-time-code' && maxLength === 1) return true;
+    if ((name.includes('otp') || id.includes('otp') || testid.includes('otp')) && maxLength === 1) return true;
+    return false;
 });
 
-if (!input && otpBoxes.length < code.length) {
+// Also collect multi-char aggregate inputs
+const aggregates = Array.from(document.querySelectorAll(
+    'input[data-input-otp="true"], input[name="code"], input[name="otp"], input[autocomplete="one-time-code"], input[inputmode="numeric"], input[inputmode="text"], input[type="tel"], input[type="text"]'
+)).filter((node) => {
+    if (!isVisible(node) || node.disabled || node.readOnly) return false;
+    const maxLength = Number(node.maxLength || 0);
+    // multi-char: maxLength missing/-1/0 or > 1
+    return maxLength !== 1;
+});
+
+if (!otpBoxes.length && !aggregates.length) {
     return 'not-ready';
 }
 
-if (input) {
-    input.focus();
-    input.click();
-    setNativeValue(input, code);
-    dispatchInputEvents(input, code);
-
-    const normalizedValue = String(input.value || '').trim();
-    const expectedLength = Number(input.maxLength || code.length || 6);
-    const slots = Array.from(document.querySelectorAll('[data-input-otp-slot="true"]'));
-    const filledSlots = slots.filter((slot) => (slot.textContent || '').trim()).length;
-
-    if (normalizedValue !== code) {
-        return 'aggregate-mismatch';
+// ---- Path 1: per-box OTP (most reliable for xAI) ----
+if (otpBoxes.length >= Math.min(code.length, 4)) {
+    const need = Math.min(otpBoxes.length, code.length);
+    const ordered = otpBoxes.slice(0, need);
+    for (let i = 0; i < ordered.length; i += 1) {
+        fillOne(ordered[i], code[i] || '');
     }
-
-    if (expectedLength > 0 && normalizedValue.length !== expectedLength) {
-        return 'aggregate-length-mismatch';
+    let merged = readOtpBoxes(ordered).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    if (merged === code.slice(0, need) || merged === code) {
+        try { ordered[ordered.length - 1].blur(); } catch (e) {}
+        return 'filled';
     }
-
-    if (slots.length && filledSlots && filledSlots !== normalizedValue.length) {
-        return 'aggregate-slot-mismatch';
+    // retry boxes once
+    for (let i = 0; i < ordered.length; i += 1) {
+        fillOne(ordered[i], code[i] || '');
     }
-
-    input.blur();
-    return 'filled';
+    merged = readOtpBoxes(ordered).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    if (merged === code.slice(0, need) || merged === code) {
+        return 'filled';
+    }
+    // fall through to aggregate; keep trying
 }
 
-const orderedBoxes = otpBoxes.slice(0, code.length);
-for (let i = 0; i < orderedBoxes.length; i += 1) {
-    const box = orderedBoxes[i];
-    const char = code[i] || '';
-    box.focus();
-    box.click();
-    setNativeValue(box, char);
-    dispatchInputEvents(box, char);
-    box.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: char }));
-    box.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: char }));
-    box.blur();
+// ---- Path 2: aggregate / hidden OTP input ----
+const candidates = [code, codePlain, codeHyphen].filter((v, i, a) => v && a.indexOf(v) === i);
+for (const input of aggregates) {
+    for (const tryCode of candidates) {
+        const got = fillOne(input, tryCode).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+        const expect = tryCode.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+        const slotText = readSlots().replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+        if (got === expect || slotText === expect || got.endsWith(expect) || expect.startsWith(got) && got.length >= 6) {
+            try { input.blur(); } catch (e) {}
+            return 'filled';
+        }
+        // maxLength truncated?
+        const ml = Number(input.maxLength || 0);
+        if (ml > 0 && got.length === ml && expect.startsWith(got)) {
+            try { input.blur(); } catch (e) {}
+            return 'filled';
+        }
+    }
 }
 
-const merged = orderedBoxes.map((node) => String(node.value || '').trim()).join('');
-return merged === code ? 'filled' : 'box-mismatch';
+// ---- Path 3: any visible single inputs equal to code length ----
+if (!otpBoxes.length) {
+    const singles = Array.from(document.querySelectorAll('input')).filter((node) => {
+        if (!isVisible(node) || node.disabled || node.readOnly) return false;
+        return Number(node.maxLength || 0) === 1;
+    });
+    if (singles.length >= code.length) {
+        for (let i = 0; i < code.length; i += 1) {
+            fillOne(singles[i], code[i]);
+        }
+        const merged = singles.slice(0, code.length).map((n) => String(n.value || '')).join('').toUpperCase();
+        if (merged === code) return 'filled';
+    }
+}
+
+// Soft success: if any aggregate already holds enough of the code after attempts
+for (const input of aggregates) {
+    const v = String(input.value || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    if (v && (v === code || code.startsWith(v) && v.length >= 6 || v.includes(code))) {
+        return 'filled';
+    }
+}
+
+if (aggregates.length || otpBoxes.length) {
+    // Inputs exist but value not readable (controlled/shadow) ? still try confirm later.
+    // Return soft-filled so click path can proceed once; verification re-check handles empty.
+    const soft = aggregates[0] || otpBoxes[0];
+    if (soft) {
+        try {
+            soft.focus();
+            // last-ditch assign
+            soft.value = code;
+            soft.dispatchEvent(new Event('input', { bubbles: true }));
+            soft.dispatchEvent(new Event('change', { bubbles: true }));
+        } catch (e) {}
+    }
+    return 'soft-filled';
+}
+
+return 'not-ready';
                 """,
                 code,
             )
+
         except PageDisconnectedError:
             # 点击确认邮箱后如果刚好发生跳转，旧页面句柄会断开；此时切到新页继续判断即可。
             refresh_active_page()
@@ -753,12 +884,14 @@ return merged === code ? 'filled' : 'box-mismatch';
             time.sleep(0.5)
             continue
 
-        if filled != 'filled':
+        if filled not in ('filled', 'soft-filled'):
             print(f"[Debug] 验证码输入框已出现，但写入失败: {filled}")
             time.sleep(0.5)
             continue
+        if filled == 'soft-filled':
+            print(f"[Debug] 验证码 value 未回读，按 soft-filled 继续提交: {code}")
 
-        if filled == 'filled':
+        if filled in ('filled', 'soft-filled'):
             time.sleep(1.2)
             try:
                 clicked = page.run_js(

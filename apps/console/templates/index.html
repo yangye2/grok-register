@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Grok Register Console</title>
-  <link rel="stylesheet" href="/static/app.css?v=1784277362">
+  <link rel="stylesheet" href="/static/app.css?v=1784279504">
 </head>
 <body>
   <div class="shell">
@@ -119,15 +119,14 @@
               <h3>账号管理</h3>
             </div>
             <div class="panel-actions">
-              <button id="accountsRefreshBtn" class="button button-secondary" type="button">刷新 SSO</button>
+              <button id="accountsRefreshBtn" class="button button-secondary" type="button">刷新列表</button>
               <button id="accountsSelectFilteredBtn" class="button button-secondary" type="button">全选筛选结果</button>
-              <button id="accountsProbeBatchBtn" class="button button-secondary" type="button" disabled>批量测活</button>
-              <button id="accountsRefreshTokenBatchBtn" class="button button-secondary" type="button" disabled>批量续期</button>
+
               <button id="accountsOauthBatchBtn" class="button button-secondary" type="button" disabled>批量 OAuth 授权</button>
-              <button id="accountsCpaBatchBtn" class="button" type="button" disabled>批量授权并推送</button>
-              <button id="accountsCpaPushBatchBtn" class="button button-secondary" type="button" disabled>批量推送 CPA</button>
-            <button id="accountsSub2apiPushBatchBtn" class="button button-secondary" type="button" disabled>批量推送 Sub2API</button>
-              <button id="accountsCpaCancelBtn" class="button button-danger" type="button" disabled>停止队列</button>
+              <button id="accountsRefreshTokenBatchBtn" class="button button-secondary" type="button" disabled>批量续期</button>
+              <button id="accountsProbeBatchBtn" class="button button-secondary" type="button" disabled>批量测活</button>
+
+<button id="accountsCpaCancelBtn" class="button button-danger" type="button" disabled>停止队列</button>
               <button id="accountsCpaExportBtn" class="button button-secondary" type="button" disabled>导出结果</button>
               <button id="accountsDownloadBtn" class="button" type="button">批量下载</button>
               <button id="accountsDeleteBtn" class="button button-danger" type="button">批量删除</button>
@@ -588,6 +587,6 @@
   <script>
     window.__DEFAULTS__ = {{ defaults|safe }};
   </script>
-  <script src="/static/app.js?v=1784277362"></script>
+  <script src="/static/app.js?v=1784279504" charset="utf-8"></script>
 </body>
 </html>

@@ -564,6 +564,9 @@ function isCpaBusy(account) {
     if (metricAccountSelectedEl) metricAccountSelectedEl.textContent = String(state.selectedAccountIds.size);
     accountsDownloadBtnEl.disabled = state.selectedAccountIds.size === 0;
     accountsDeleteBtnEl.disabled = state.selectedAccountIds.size === 0;
+    if (accountsProbeBatchBtnEl) accountsProbeBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
+    if (accountsRefreshTokenBatchBtnEl) accountsRefreshTokenBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
+    if (accountsOauthBatchBtnEl) accountsOauthBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsCpaBatchBtnEl) accountsCpaBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsCpaPushBatchBtnEl) accountsCpaPushBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsSub2apiPushBatchBtnEl) accountsSub2apiPushBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
@@ -605,15 +608,14 @@ function isCpaBusy(account) {
         <td>${escapeHtml(ssoAliveLabel(account.sso_alive))}</td>
         <td title="${escapeHtml(account.token_checked_at || "")}">${escapeHtml(account.token_expires_at || "-")}</td>
         <td class="account-actions">
-          <button class="button button-small" type="button" data-download-account-id="${account.id}">??</button>
-          <button class="button button-secondary button-small" type="button" data-probe-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>测活</button>
-          <button class="button button-secondary button-small" type="button" data-refresh-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>续期</button>
+
           <button class="button button-secondary button-small" type="button" data-oauth-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>OAuth</button>
-          <button class="button button-secondary button-small" type="button" data-cpa-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>?????</button>
-          ${canPushExistingCpa(account) ? `<button class="button button-secondary button-small" type="button" data-cpa-upload-account-id="${account.id}">??CPA</button>` : ""}
-          ${canPushExistingCpa(account) ? `<button class="button button-secondary button-small" type="button" data-sub2api-upload-account-id="${account.id}">?Sub2API</button>` : ""}
-          <button class="button button-secondary button-small" type="button" data-cpa-log-account-id="${account.id}">??</button>
-          <button class="button button-danger button-small" type="button" data-delete-account-id="${account.id}">??</button>
+          <button class="button button-secondary button-small" type="button" data-refresh-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>续期</button>
+          <button class="button button-secondary button-small" type="button" data-probe-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>测活</button>
+
+<button class="button button-secondary button-small" type="button" data-cpa-log-account-id="${account.id}">日志</button>
+          <button class="button button-danger button-small" type="button" data-delete-account-id="${account.id}">删除</button>
+
         </td>
       </tr>
     `).join("");

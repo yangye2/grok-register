@@ -3367,6 +3367,11 @@ class _NoCacheStaticFiles(StaticFiles):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
+        ctype = str(response.headers.get("content-type") or "")
+        if path.endswith(".js") and "charset" not in ctype.lower():
+            response.headers["content-type"] = "application/javascript; charset=utf-8"
+        elif path.endswith(".css") and "charset" not in ctype.lower():
+            response.headers["content-type"] = "text/css; charset=utf-8"
         return response
 
 
