@@ -9,6 +9,9 @@
     selectedAccountIds: new Set(),
     accountSearch: "",
     accountTaskFilter: "all",
+    accountCpaFilter: "all",
+    accountTokenFilter: "all",
+    accountSsoFilter: "all",
     accountPage: 1,
     accountPageSize: 20,
     accountTotal: 0,
@@ -56,6 +59,7 @@
   const accountsCpaCancelBtnEl = document.getElementById("accountsCpaCancelBtn");
   const accountsCpaExportBtnEl = document.getElementById("accountsCpaExportBtn");
   const accountsSelectFilteredBtnEl = document.getElementById("accountsSelectFilteredBtn");
+  const accountsClearFilteredBtnEl = document.getElementById("accountsClearFilteredBtn");
   const accountsCpaQueuePanelEl = document.getElementById("accountsCpaQueuePanel");
   const accountsCpaQueueTitleEl = document.getElementById("accountsCpaQueueTitle");
   const accountsCpaQueueMetaEl = document.getElementById("accountsCpaQueueMeta");
@@ -71,6 +75,9 @@
   const accountCpaLogCloseBtnEl = document.getElementById("accountCpaLogCloseBtn");
   const accountsSearchInputEl = document.getElementById("accountsSearchInput");
   const accountsTaskFilterEl = document.getElementById("accountsTaskFilter");
+  const accountsCpaFilterEl = document.getElementById("accountsCpaFilter");
+  const accountsTokenFilterEl = document.getElementById("accountsTokenFilter");
+  const accountsSsoFilterEl = document.getElementById("accountsSsoFilter");
   const accountsPageSizeEl = document.getElementById("accountsPageSize");
   const accountsPageMetaEl = document.getElementById("accountsPageMeta");
   const accountsPrevPageBtnEl = document.getElementById("accountsPrevPageBtn");
@@ -136,6 +143,11 @@
     _omSet("outmail_plus_alias", defaults.outmail_plus_alias !== false, true);
     _omSet("outmail_plus_alias_count", defaults.outmail_plus_alias_count ?? 1);
     _omSet("outmail_alias_suffix_len", defaults.outmail_alias_suffix_len ?? 6);
+    _omSet("outmail_fetch_top", defaults.outmail_fetch_top ?? 10);
+    _omSet("outmail_since_padding_sec", defaults.outmail_since_padding_sec ?? 30);
+    _omSet("outmail_group_id", defaults.outmail_group_id || "");
+    _omSet("outmail_used_file", defaults.outmail_used_file || "outmail_used_mailboxes.txt");
+
     _omSet("outmail_anonymous_enabled", Boolean(defaults.outmail_anonymous_enabled), true);
     _omSet("outmail_anonymous_delete_after", Boolean(defaults.outmail_anonymous_delete_after), true);
     _omSet("outmail_exclude_used", defaults.outmail_exclude_used !== false, true);
@@ -213,6 +225,13 @@
     }
     if (settingsFormEl.elements.sub2api_account_priority) {
       settingsFormEl.elements.sub2api_account_priority.value = defaults.sub2api_account_priority ?? 1;
+    if (settingsFormEl.elements.sub2api_account_load_factor) {
+      settingsFormEl.elements.sub2api_account_load_factor.value = defaults.sub2api_account_load_factor ?? 10;
+    }
+    if (settingsFormEl.elements.sub2api_account_rate_multiplier) {
+      settingsFormEl.elements.sub2api_account_rate_multiplier.value = defaults.sub2api_account_rate_multiplier ?? 1;
+    }
+
     }
     if (settingsFormEl.elements.sub2api_account_group_ids) {
       settingsFormEl.elements.sub2api_account_group_ids.value = defaults.sub2api_account_group_ids || "";
@@ -522,6 +541,59 @@
   }
 
   
+  
+
+  function appendAccountFilterParams(params) {
+    if (state.accountTaskFilter && state.accountTaskFilter !== "all") {
+      params.set("task_id", state.accountTaskFilter);
+    }
+    if (state.accountSearch && state.accountSearch.trim()) {
+      params.set("search", state.accountSearch.trim());
+    }
+    if (state.accountCpaFilter && state.accountCpaFilter !== "all") {
+      params.set("cpa_status", state.accountCpaFilter);
+    }
+    if (state.accountTokenFilter && state.accountTokenFilter !== "all") {
+      params.set("token_status", state.accountTokenFilter);
+    }
+    if (state.accountSsoFilter && state.accountSsoFilter !== "all") {
+      params.set("sso_alive", state.accountSsoFilter);
+    }
+    return params;
+  }
+
+  async function copyTextToClipboard(text) {
+    const value = String(text || "").trim();
+    if (!value) return false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch (e) {}
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = value;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function shortSso(value, head = 10, tail = 6) {
+    const s = String(value || "").trim();
+    if (!s) return "-";
+    if (s.length <= head + tail + 3) return s;
+    return s.slice(0, head) + "..." + s.slice(-tail);
+  }
+
   function tokenStatusLabel(status) {
     const map = {
       unknown: "未知",
@@ -544,6 +616,36 @@
     return "-";
   }
 
+  function cpaStatusTone(status) {
+    const s = String(status || "not_started");
+    if (s === "uploaded" || s === "generated") return "tone-ok";
+    if (s === "queued" || s === "running" || s === "uploading") return "tone-info";
+    if (s === "invalid" || s === "failed") return "tone-bad";
+    if (s === "cancelled") return "tone-mute";
+    return "tone-mute"; // not_started / unknown
+  }
+
+  function tokenStatusTone(status) {
+    const s = String(status || "unknown");
+    if (s === "alive" || s === "refreshed") return "tone-ok";
+    if (s === "dead" || s === "sso_dead" || s === "api_dead" || s === "refresh_failed" || s === "refresh_invalid" || s === "oauth_failed" || s === "error") return "tone-bad";
+    return "tone-mute";
+  }
+
+  function ssoAliveTone(value) {
+    if (value === 1 || value === true || value === "1") return "tone-ok";
+    if (value === 0 || value === false || value === "0") return "tone-bad";
+    return "tone-mute";
+  }
+
+  function statusPill(text, tone, title) {
+    const t = escapeHtml(text || "-");
+    const c = escapeHtml(tone || "tone-mute");
+    const tip = title ? ` title="${escapeHtml(title)}"` : "";
+    return `<span class="status-pill ${c}"${tip}>${t}</span>`;
+  }
+
+
 function isCpaBusy(account) {
     return ["running", "uploading", "queued"].includes(account.cpa_status);
   }
@@ -564,6 +666,7 @@ function isCpaBusy(account) {
     if (metricAccountSelectedEl) metricAccountSelectedEl.textContent = String(state.selectedAccountIds.size);
     accountsDownloadBtnEl.disabled = state.selectedAccountIds.size === 0;
     accountsDeleteBtnEl.disabled = state.selectedAccountIds.size === 0;
+    if (accountsClearFilteredBtnEl) accountsClearFilteredBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsProbeBatchBtnEl) accountsProbeBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsRefreshTokenBatchBtnEl) accountsRefreshTokenBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsOauthBatchBtnEl) accountsOauthBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
@@ -576,7 +679,7 @@ function isCpaBusy(account) {
     accountsSelectAllEl.indeterminate = pageSelectedCount > 0 && pageSelectedCount < pageIds.length;
     if (accountsCpaCancelBtnEl) accountsCpaCancelBtnEl.disabled = !(state.cpaQueue && state.cpaQueue.active);
     if (accountsCpaExportBtnEl) {
-      accountsCpaExportBtnEl.disabled = !(state.cpaQueue && (state.cpaQueue.results || []).length);
+      accountsCpaExportBtnEl.disabled = !( (state.cpaQueue && (state.cpaQueue.results || []).length) || state.selectedAccountIds.size > 0 );
     }
     accountsPrevPageBtnEl.disabled = state.accountPage <= 1;
     accountsNextPageBtnEl.disabled = state.accountPage >= state.accountTotalPages;
@@ -598,24 +701,20 @@ function isCpaBusy(account) {
         <td class="select-col">
           <input type="checkbox" data-account-select="${account.id}" ${state.selectedAccountIds.has(account.id) ? "checked" : ""} aria-label="选择 ${escapeHtml(account.email)}">
         </td>
-        <td class="account-email" title="${escapeHtml(account.email)}">${escapeHtml(account.email)}</td>
-        <td class="account-password" title="${escapeHtml(account.password || "")}">${escapeHtml(account.password || "-")}</td>
-        <td class="account-sso" title="${escapeHtml(account.sso || "")}">${escapeHtml(account.sso || "-")}</td>
-        <td title="#${account.task_id} ${escapeHtml(account.task_name || "")}">#${account.task_id} ${escapeHtml(account.task_name || "")}</td>
+        <td class="account-email account-copyable" data-copy="${escapeHtml(account.email)}" title="点击复制邮箱: ${escapeHtml(account.email)}">${escapeHtml(account.email)}</td>
+        <td class="account-password account-copyable" data-copy="${escapeHtml(account.password || "")}" title="点击复制密码">${escapeHtml(account.password || "-")}</td>
+        <td class="account-sso account-copyable" data-copy="${escapeHtml(account.sso || "")}" title="点击复制 SSO: ${escapeHtml(account.sso || "")}">${escapeHtml(shortSso(account.sso))}</td>
         <td>${escapeHtml(account.created_at || "-")}</td>
-        <td title="${escapeHtml(account.cpa_error || account.cpa_path || "")}">${escapeHtml(cpaStatusLabel(account.cpa_status))}</td>
-        <td title="${escapeHtml(account.token_error || account.last_renew_source || "")}">${escapeHtml(tokenStatusLabel(account.token_status))}</td>
-        <td>${escapeHtml(ssoAliveLabel(account.sso_alive))}</td>
+        <td class="account-cpa-status">${statusPill(cpaStatusLabel(account.cpa_status), cpaStatusTone(account.cpa_status), account.cpa_error || account.cpa_path || "")}</td>
+        <td class="account-token-status">${statusPill(tokenStatusLabel(account.token_status), tokenStatusTone(account.token_status), account.token_error || account.last_renew_source || "")}</td>
+        <td class="account-sso-alive">${statusPill(ssoAliveLabel(account.sso_alive), ssoAliveTone(account.sso_alive), "")}</td>
         <td title="${escapeHtml(account.token_checked_at || "")}">${escapeHtml(account.token_expires_at || "-")}</td>
         <td class="account-actions">
-
-          <button class="button button-secondary button-small" type="button" data-oauth-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>OAuth</button>
-          <button class="button button-secondary button-small" type="button" data-refresh-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>续期</button>
-          <button class="button button-secondary button-small" type="button" data-probe-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>测活</button>
-
-<button class="button button-secondary button-small" type="button" data-cpa-log-account-id="${account.id}">日志</button>
+          <button class="button button-small button-info" type="button" data-oauth-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>OAuth</button>
+          <button class="button button-small button-warn" type="button" data-refresh-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>续期</button>
+          <button class="button button-small button-success" type="button" data-probe-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>测活</button>
+          <button class="button button-small button-neutral" type="button" data-cpa-log-account-id="${account.id}">日志</button>
           <button class="button button-danger button-small" type="button" data-delete-account-id="${account.id}">删除</button>
-
         </td>
       </tr>
     `).join("");
@@ -629,6 +728,26 @@ function isCpaBusy(account) {
           state.selectedAccountIds.delete(accountId);
         }
         renderAccounts();
+      });
+    });
+
+
+    accountsTableBodyEl.querySelectorAll("[data-copy]").forEach((cell) => {
+      cell.addEventListener("click", async () => {
+        const value = cell.getAttribute("data-copy") || "";
+        const ok = await copyTextToClipboard(value);
+        if (!ok) {
+          accountsMetaEl.textContent = "复制失败，请手动选择文本";
+          return;
+        }
+        cell.classList.add("copied");
+        const prevTitle = cell.getAttribute("title") || "";
+        cell.setAttribute("title", "已复制");
+        accountsMetaEl.textContent = `已复制: ${String(value).slice(0, 48)}${String(value).length > 48 ? "..." : ""}`;
+        setTimeout(() => {
+          cell.classList.remove("copied");
+          if (prevTitle) cell.setAttribute("title", prevTitle);
+        }, 1200);
       });
     });
 
@@ -831,21 +950,46 @@ function isCpaBusy(account) {
   }
 
   function downloadSsoFile(accounts, filename) {
-    const lines = accounts
+    const lines = (accounts || [])
       .map((account) => String(account.sso || "").trim())
       .filter(Boolean);
     if (!lines.length) {
-      accountsMetaEl.textContent = "没有可下载的 SSO";
+      if (accountsMetaEl) accountsMetaEl.textContent = "没有可下载的 SSO";
       return;
     }
-    const blob = new Blob([`${lines.join("\n")}\n`], { type: "text/plain;charset=utf-8" });
+    const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename || ("sso_" + Date.now() + ".txt");
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadAccountLines(accounts, filename) {
+    const lines = (accounts || [])
+      .map((account) => {
+        const email = String(account.email || "").trim();
+        const password = String(account.password || "").trim();
+        const sso = String(account.sso || "").trim();
+        if (!email && !sso) return "";
+        return email + "----" + password + "----" + sso;
+      })
+      .filter(Boolean);
+    if (!lines.length) {
+      if (accountsMetaEl) accountsMetaEl.textContent = "没有可导出的账号行";
+      return;
+    }
+    const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename || ("accounts_" + Date.now() + ".txt");
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
     URL.revokeObjectURL(url);
   }
 
@@ -1031,13 +1175,7 @@ function isCpaBusy(account) {
 
   async function refreshAccounts() {
     try {
-      const params = new URLSearchParams();
-      if (state.accountTaskFilter !== "all") {
-        params.set("task_id", state.accountTaskFilter);
-      }
-      if (state.accountSearch.trim()) {
-        params.set("search", state.accountSearch.trim());
-      }
+      const params = appendAccountFilterParams(new URLSearchParams());
       params.set("page", String(state.accountPage));
       params.set("page_size", String(state.accountPageSize));
       const data = await fetchJson(`/api/accounts?${params.toString()}`);
@@ -1137,7 +1275,7 @@ function isCpaBusy(account) {
       accountsCpaQueueMessageEl.textContent = q.message || (cur ? `当前: ${cur}` : "空闲");
     }
     if (accountsCpaCancelBtnEl) accountsCpaCancelBtnEl.disabled = !q.active;
-    if (accountsCpaExportBtnEl) accountsCpaExportBtnEl.disabled = !(q.results || []).length;
+    if (accountsCpaExportBtnEl) accountsCpaExportBtnEl.disabled = !( (q.results || []).length || state.selectedAccountIds.size > 0 );
   }
 
   async function refreshCpaQueue() {
@@ -1288,20 +1426,56 @@ async function startBatchCpa(mode) {
     });
   }
   if (accountsCpaExportBtnEl) {
-    accountsCpaExportBtnEl.addEventListener("click", () => {
-      window.open("/api/accounts/cpa/queue/export", "_blank");
+    accountsCpaExportBtnEl.title =
+      "选中账号导出 email----password----sso；若有队列结果则优先导出队列 CSV";
+    accountsCpaExportBtnEl.addEventListener("click", async () => {
+      const queueResults = (state.cpaQueue && state.cpaQueue.results) || [];
+      try {
+        if (queueResults.length) {
+          window.open("/api/accounts/cpa/queue/export", "_blank");
+          accountsMetaEl.textContent = `已导出队列结果（含 email----password----sso）共 ${queueResults.length} 条`;
+          return;
+        }
+        const ids = Array.from(state.selectedAccountIds);
+        if (!ids.length) {
+          accountsMetaEl.textContent = "请先选择账号，或等待队列产生结果";
+          return;
+        }
+        const response = await fetch("/api/accounts/export", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ account_ids: ids }),
+        });
+        if (!response.ok) {
+          let detail = `HTTP ${response.status}`;
+          try {
+            const data = await response.json();
+            detail = data.detail || data.message || detail;
+          } catch (e) {}
+          throw new Error(detail);
+        }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        const cd = response.headers.get("content-disposition") || "";
+        const m = /filename=\"?([^\";]+)\"?/i.exec(cd);
+        a.href = url;
+        a.download = (m && m[1]) || `accounts_${Date.now()}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        accountsMetaEl.textContent = `已导出账号（email----password----sso）共 ${ids.length} 条`;
+      } catch (error) {
+        accountsMetaEl.textContent = `导出失败: ${error.message || error}`;
+      }
     });
   }
   if (accountsSelectFilteredBtnEl) {
     accountsSelectFilteredBtnEl.addEventListener("click", async () => {
       try {
-        const params = new URLSearchParams();
-        if (state.accountTaskFilter && state.accountTaskFilter !== "all") {
-          params.set("task_id", state.accountTaskFilter);
-        }
-        if (state.accountSearch && state.accountSearch.trim()) {
-          params.set("search", state.accountSearch.trim());
-        }
+        const params = appendAccountFilterParams(new URLSearchParams());
         const qs = params.toString();
         const data = await fetchJson(`/api/accounts/ids${qs ? `?${qs}` : ""}`);
         const ids = data.ids || [];
@@ -1313,7 +1487,18 @@ async function startBatchCpa(mode) {
       }
     });
   }
-  accountsDownloadBtnEl.addEventListener("click", async () => {
+    if (accountsClearFilteredBtnEl) {
+    accountsClearFilteredBtnEl.addEventListener("click", () => {
+      const n = state.selectedAccountIds.size;
+      state.selectedAccountIds = new Set();
+      accountsMetaEl.textContent = n
+        ? `已取消全选（清除 ${n} 个已选账号）`
+        : "当前没有选中的账号";
+      renderAccounts();
+    });
+  }
+
+accountsDownloadBtnEl.addEventListener("click", async () => {
     const ids = Array.from(state.selectedAccountIds);
     if (!ids.length) {
       accountsMetaEl.textContent = "请先选择账号";
@@ -1364,6 +1549,27 @@ async function startBatchCpa(mode) {
     state.accountPage = 1;
     refreshAccounts();
   });
+  if (accountsCpaFilterEl) {
+    accountsCpaFilterEl.addEventListener("change", () => {
+      state.accountCpaFilter = accountsCpaFilterEl.value;
+      state.accountPage = 1;
+      refreshAccounts();
+    });
+  }
+  if (accountsTokenFilterEl) {
+    accountsTokenFilterEl.addEventListener("change", () => {
+      state.accountTokenFilter = accountsTokenFilterEl.value;
+      state.accountPage = 1;
+      refreshAccounts();
+    });
+  }
+  if (accountsSsoFilterEl) {
+    accountsSsoFilterEl.addEventListener("change", () => {
+      state.accountSsoFilter = accountsSsoFilterEl.value;
+      state.accountPage = 1;
+      refreshAccounts();
+    });
+  }
   accountsPageSizeEl.addEventListener("change", () => {
     state.accountPageSize = Number(accountsPageSizeEl.value) || 20;
     state.accountPage = 1;
@@ -1466,6 +1672,9 @@ async function startBatchCpa(mode) {
       sub2api_account_type: String(settingsFormEl.elements.sub2api_account_type?.value || "oauth").trim() || "oauth",
       sub2api_account_concurrency: Number(settingsFormEl.elements.sub2api_account_concurrency?.value ?? 10) || 10,
       sub2api_account_priority: Number(settingsFormEl.elements.sub2api_account_priority?.value ?? 1),
+      sub2api_account_load_factor: Number(settingsFormEl.elements.sub2api_account_load_factor?.value ?? 10) || 10,
+      sub2api_account_rate_multiplier: Number(settingsFormEl.elements.sub2api_account_rate_multiplier?.value ?? 1) || 1,
+
       sub2api_account_group_ids: String(settingsFormEl.elements.sub2api_account_group_ids?.value || "").trim(),
       sub2api_default_proxy: String(settingsFormEl.elements.sub2api_default_proxy?.value || "").trim(),
       sub2api_local_export: Boolean(settingsFormEl.elements.sub2api_local_export?.checked),

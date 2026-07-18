@@ -448,20 +448,70 @@ def close_current_page():
 
 
 def has_profile_form():
-    # 最终注册页只要出现姓名和密码输入框，就认为已经成功进入资料填写阶段。
+    """Detect xAI final signup profile page (name + password)."""
     refresh_active_page()
     try:
         return bool(page.run_js(
-            """
-const givenInput = document.querySelector('input[data-testid="givenName"], input[name="givenName"], input[autocomplete="given-name"]');
-const familyInput = document.querySelector('input[data-testid="familyName"], input[name="familyName"], input[autocomplete="family-name"]');
-const passwordInput = document.querySelector('input[data-testid="password"], input[name="password"], input[type="password"]');
-return !!(givenInput && familyInput && passwordInput);
+            r"""
+function isVisible(node) {
+    if (!node) return false;
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) {
+        return false;
+    }
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+}
+
+const givenInput = document.querySelector(
+    'input[data-testid="givenName"], input[name="givenName"], input[autocomplete="given-name"]'
+);
+const familyInput = document.querySelector(
+    'input[data-testid="familyName"], input[name="familyName"], input[autocomplete="family-name"]'
+);
+const passwordInput = document.querySelector(
+    'input[data-testid="password"], input[name="password"], input[type="password"]'
+);
+
+if (givenInput && familyInput && passwordInput) return true;
+if ((givenInput || familyInput) && passwordInput) return true;
+
+const buttons = Array.from(document.querySelectorAll('button')).filter(isVisible);
+const complete = buttons.some((btn) => {
+    const t = String(btn.innerText || btn.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    return (
+        t.includes('complete sign up')
+        || t.includes('complete signup')
+        || t === 'complete'
+        || t.includes('create account')
+    );
+});
+if (complete && (givenInput || passwordInput)) return true;
+return false;
             """
         ))
     except Exception:
         return False
 
+
+def on_signup_profile_step():
+    """True when signup has moved past OTP into profile form."""
+    if has_profile_form():
+        return True
+    try:
+        refresh_active_page()
+        if page is None:
+            return False
+        return bool(page.run_js(
+            r"""
+return !!(
+  document.querySelector('input[name="givenName"], input[data-testid="givenName"]')
+  && document.querySelector('input[type="password"], input[name="password"]')
+);
+            """
+        ))
+    except Exception:
+        return False
 
 def click_email_signup_button(timeout=10):
     # 页面打开后，自动点击“使用邮箱注册”按钮。
@@ -630,8 +680,15 @@ def fill_code_and_submit(email, dev_token, timeout=60):
         code = code_raw
     print(f"[*] 获取到验证码: {code_raw} -> fill={code}")
 
+    if on_signup_profile_step():
+        print("[*] ????????????????????")
+        return (code if code else "SKIPPED")
+
     deadline = time.time() + timeout
     while time.time() < deadline:
+        if on_signup_profile_step():
+            print("[*] ??????????????????????")
+            return code
         try:
             filled = page.run_js(
                 r"""
@@ -1019,6 +1076,24 @@ return { url: location.href, inputs, buttons };
         """
     )
     print(f"[Debug] 验证码页 DOM 摘要: {debug_snapshot}")
+    if on_signup_profile_step():
+        print("[*] DOM 已进入姓名/密码注册页，视为验证码步骤完成。")
+        return code
+    try:
+        snap = debug_snapshot if isinstance(debug_snapshot, dict) else {}
+        names = {str(x.get("name") or "") for x in (snap.get("inputs") or []) if isinstance(x, dict)}
+        btn_text = " ".join(
+            str(b.get("text") or "").lower()
+            for b in (snap.get("buttons") or [])
+            if isinstance(b, dict)
+        )
+        if {"givenName", "familyName", "password"} <= names or (
+            "givenName" in names and "password" in names
+        ) or ("complete sign up" in btn_text):
+            print("[*] 根据 DOM 摘要判定已进入资料页，跳过验证码错误。")
+            return code
+    except Exception:
+        pass
     raise Exception("未找到验证码输入框或确认邮箱按钮")
 
 

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Grok Register Console</title>
-  <link rel="stylesheet" href="/static/app.css?v=1784279504">
+  <link rel="stylesheet" href="/static/app.css?v=1784342935">
 </head>
 <body>
   <div class="shell">
@@ -118,18 +118,30 @@
               <div class="eyebrow">Account Store</div>
               <h3>账号管理</h3>
             </div>
-            <div class="panel-actions">
-              <button id="accountsRefreshBtn" class="button button-secondary" type="button">刷新列表</button>
-              <button id="accountsSelectFilteredBtn" class="button button-secondary" type="button">全选筛选结果</button>
-
-              <button id="accountsOauthBatchBtn" class="button button-secondary" type="button" disabled>批量 OAuth 授权</button>
-              <button id="accountsRefreshTokenBatchBtn" class="button button-secondary" type="button" disabled>批量续期</button>
-              <button id="accountsProbeBatchBtn" class="button button-secondary" type="button" disabled>批量测活</button>
-
-<button id="accountsCpaCancelBtn" class="button button-danger" type="button" disabled>停止队列</button>
-              <button id="accountsCpaExportBtn" class="button button-secondary" type="button" disabled>导出结果</button>
-              <button id="accountsDownloadBtn" class="button" type="button">批量下载</button>
-              <button id="accountsDeleteBtn" class="button button-danger" type="button">批量删除</button>
+            <div class="accounts-toolbar panel-actions" role="toolbar" aria-label="账号批量操作">
+              <div class="accounts-toolbar-group" title="列表与选择">
+                <button id="accountsRefreshBtn" class="button button-neutral" type="button">刷新列表</button>
+                <button id="accountsSelectFilteredBtn" class="button button-neutral" type="button">全选筛选结果</button>
+                <button id="accountsClearFilteredBtn" class="button button-neutral" type="button">取消全选筛选</button>
+              </div>
+              <span class="accounts-toolbar-sep" aria-hidden="true"></span>
+              <div class="accounts-toolbar-group" title="Token 维护">
+                <button id="accountsOauthBatchBtn" class="button button-info" type="button" disabled>批量 OAuth</button>
+                <button id="accountsRefreshTokenBatchBtn" class="button button-warn" type="button" disabled>批量续期</button>
+                <button id="accountsProbeBatchBtn" class="button button-success" type="button" disabled>批量测活</button>
+              </div>
+              <span class="accounts-toolbar-sep" aria-hidden="true"></span>
+              <div class="accounts-toolbar-group" title="推送与队列">
+                <button id="accountsCpaPushBatchBtn" class="button button-primary" type="button" disabled>批量推送 CPA</button>
+                <button id="accountsSub2apiPushBatchBtn" class="button button-purple" type="button" disabled>批量推送 Sub2API</button>
+                <button id="accountsCpaCancelBtn" class="button button-danger" type="button" disabled>停止队列</button>
+              </div>
+              <span class="accounts-toolbar-sep" aria-hidden="true"></span>
+              <div class="accounts-toolbar-group" title="导出与删除">
+                <button id="accountsCpaExportBtn" class="button button-teal" type="button" disabled title="选中账号: email----password----sso；有队列结果时优先导出队列CSV">导出账号</button>
+                <button id="accountsDownloadBtn" class="button button-teal" type="button">导出SSO</button>
+                <button id="accountsDeleteBtn" class="button button-danger" type="button">批量删除</button>
+              </div>
             </div>
           </div>
           <div class="filter-bar">
@@ -141,6 +153,44 @@
               <span class="meta-label">任务筛选</span>
               <select id="accountsTaskFilter">
                 <option value="all">全部任务</option>
+              </select>
+            </label>
+            <label class="filter-field narrow">
+              <span class="meta-label">CPA 状态</span>
+              <select id="accountsCpaFilter">
+                <option value="all">全部</option>
+                <option value="not_started">未授权</option>
+                <option value="queued">排队中</option>
+                <option value="running">授权中</option>
+                <option value="uploading">推送中</option>
+                <option value="generated">已生成</option>
+                <option value="uploaded">已推送</option>
+                <option value="invalid">测活失败</option>
+                <option value="failed">失败</option>
+              </select>
+            </label>
+            <label class="filter-field narrow">
+              <span class="meta-label">Token 状态</span>
+              <select id="accountsTokenFilter">
+                <option value="all">全部</option>
+                <option value="alive">有效</option>
+                <option value="refreshed">已续期</option>
+                <option value="dead">失效</option>
+                <option value="sso_dead">SSO失效</option>
+                <option value="api_dead">API失效</option>
+                <option value="refresh_failed">续期失败</option>
+                <option value="oauth_failed">授权失败</option>
+                <option value="unknown">未知</option>
+                <option value="error">异常</option>
+              </select>
+            </label>
+            <label class="filter-field narrow">
+              <span class="meta-label">SSO 测活</span>
+              <select id="accountsSsoFilter">
+                <option value="all">全部</option>
+                <option value="1">存活</option>
+                <option value="0">失效</option>
+                <option value="unknown">未测</option>
               </select>
             </label>
             <label class="filter-field">
@@ -179,7 +229,6 @@
                   <th>邮箱</th>
                   <th>密码</th>
                   <th>SSO</th>
-                  <th>任务</th>
                   <th>创建时间</th>
                   <th>CPA</th>
                   <th>Token</th>
@@ -190,7 +239,7 @@
               </thead>
               <tbody id="accountsTableBody"></tbody>
             </table>
-            <div id="accountsEmpty" class="empty hidden">暂无账号</div>
+            <div id="accountsEmpty" class="empty hidden">暂无账号，调整筛选条件或先完成注册任务</div>
           </div>
           <div class="pagination-bar">
             <div id="accountsPageMeta" class="pagination-meta">第 1 页</div>
@@ -221,276 +270,346 @@
           </div>
 
           <form id="settingsForm" class="task-form">
-            <label>
-              <span>浏览器代理</span>
-              <input name="browser_proxy" placeholder="例如 http://127.0.0.1:18118">
-            </label>
-            <label>
-              <span>请求代理</span>
-              <input name="proxy" placeholder="例如 http://host:port">
-            </label>
-            <label>
-              <span>邮箱 API Base</span>
-              <input name="temp_mail_api_base" placeholder="https://api.duckmail.sbs">
-            </label>
-            <label>
-              <span>邮箱域名</span>
-              <input name="temp_mail_domain" placeholder="example.com 或多个 a.com,b.com">
-            </label>
-            
-            <div class="form-section-title">Outmail 邮箱（账号池 / 匿名临时邮箱）</div>
-            <label class="field">
-              <span>email_provider</span>
-              <select name="email_provider">
-                <option value="duckmail">duckmail / temp_mail（默认）</option>
-                <option value="outmail">outmail（Outlook 池 / 匿名）</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>outmail_api_base</span>
-              <input name="outmail_api_base" placeholder="https://mail.example.com">
-            </label>
-            <label class="field">
-              <span>outmail_api_key</span>
-              <input name="outmail_api_key" placeholder="X-API-Key">
-            </label>
-            <label class="field">
-              <span>outmail_session_cookie</span>
-              <input name="outmail_session_cookie" placeholder="session=... 匿名邮箱 CSRF 需要">
-            </label>
-            <label class="field">
-              <span>outmail_proxy</span>
-              <input name="outmail_proxy" placeholder="访问 outmail 代理，空=直连">
-            </label>
-            <label class="field checkbox-field">
-              <input name="outmail_plus_alias" type="checkbox" checked>
-              <span>outmail_plus_alias（local+xxxx@domain）</span>
-            </label>
-            <label class="field">
-              <span>outmail_plus_alias_count（每主邮箱可用别名次数）</span>
-              <input name="outmail_plus_alias_count" type="number" min="1" max="1000" value="1">
-            </label>
-            <label class="field">
-              <span>outmail_alias_suffix_len（别名后缀长度）</span>
-              <input name="outmail_alias_suffix_len" type="number" min="2" max="32" value="6">
-            </label>
-            <label class="field checkbox-field">
-              <input name="outmail_anonymous_enabled" type="checkbox">
-              <span>outmail_anonymous_enabled（匿名临时郮箱）</span>
-            </label>
-            <label class="field">
-              <span>outmail_anonymous_provider</span>
-              <select name="outmail_anonymous_provider">
-                <option value="cloudflare">cloudflare</option>
-                <option value="duckmail">duckmail</option>
-                <option value="gptmail">gptmail</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>outmail_anonymous_domain</span>
-              <input name="outmail_anonymous_domain" placeholder="a.com,b.com 多域名轮询">
-            </label>
-            <label class="field">
-              <span>outmail_anonymous_username_prefix</span>
-              <input name="outmail_anonymous_username_prefix" placeholder="optional">
-            </label>
-            <label class="field">
-              <span>outmail_anonymous_password</span>
-              <input name="outmail_anonymous_password" placeholder="duckmail 可选">
-            </label>
-            <label class="field checkbox-field">
-              <input name="outmail_anonymous_delete_after" type="checkbox">
-              <span>outmail_anonymous_delete_after</span>
-            </label>
-            <label class="field">
-              <span>outmail_poll_timeout_sec</span>
-              <input name="outmail_poll_timeout_sec" type="number" min="30" max="600" value="180">
-            </label>
-            <label class="field">
-              <span>outmail_poll_interval_sec</span>
-              <input name="outmail_poll_interval_sec" type="number" min="1" max="60" value="5">
-            </label>
-            <label class="field">
-              <span>outmail_from_filter / subject</span>
-              <div class="field-row">
-                <input name="outmail_from_filter" placeholder="x.ai">
-                <input name="outmail_subject_filter" placeholder="xAI">
+            <div class="settings-hint">保存后作为新建任务的默认配置；密钥类字段仅写入本机设置库。</div>
+
+            <details class="settings-section" open>
+              <summary>网络代理</summary>
+              <div class="settings-grid">
+                <label>
+                  <span>浏览器代理 <em>browser_proxy</em></span>
+                  <input name="browser_proxy" placeholder="socks5://warp:1080 / http://127.0.0.1:7890">
+                </label>
+                <label>
+                  <span>请求代理 <em>proxy</em></span>
+                  <input name="proxy" placeholder="HTTP API proxy">
+                </label>
               </div>
-            </label>
-            <label class="field checkbox-field">
-              <input name="outmail_exclude_used" type="checkbox" checked>
-              <span>outmail_exclude_used（跳过已用主邮箱）</span>
-            </label>
-<label>
-              <span>授权失败移除阈值</span>
-              <input name="domain_auth_fail_threshold" type="number" min="1" max="100" title="同一邮箱域名授权测活失败达到该次数后自动移出域名池">
-            </label>
-            <label>
-              <span>自动移除失败域名</span>
-              <input name="domain_auth_fail_auto_remove" type="checkbox" title="授权验证多次失败后自动标记并移出邮箱域名池">
-            </label>
-            <label class="full">
-              <span>已移除域名</span>
-              <input name="temp_mail_domains_removed" placeholder="自动填充，可手动清理；重新写回邮箱域名可恢复" title="授权多次失败后自动移入此处，不再参与注册选域">
-            </label>
-            <label>
-              <span>邮箱管理口令 / DuckMail API Key</span>
-              <input name="temp_mail_admin_password" placeholder="admin password / dk_xxx">
-            </label>
-            <label>
-              <span>站点密码</span>
-              <input name="temp_mail_site_password" placeholder="optional">
-            </label>
-            <label>
-              <span>CPA 授权目录</span>
-              <input name="cpa_auth_dir" placeholder="./cpa_auths">
-            </label>
-            <label>
-              <span>xAI 授权专用代理</span>
-              <input name="cpa_proxy" placeholder="仅用于 xAI 授权；留空则使用请求代理">
-            </label>
-            <label>
-              <span>CPA 导入目录</span>
-              <input name="cpa_hotload_dir" placeholder="CPA 的 auth 热加载目录">
-            </label>
-            <label>
-              <span>CPA 授权超时（秒）</span>
-              <input name="cpa_mint_timeout_sec" type="number" min="60" max="900">
-            </label>
-            
-            <label class="field checkbox-field">
-              <input name="cpa_prefer_sso_oauth" type="checkbox" checked>
-              <span>cpa_prefer_sso_oauth（注册/授权优先 SSO 纯 HTTP OAuth）</span>
-            </label>
-            <label class="field checkbox-field">
-              <input name="cpa_probe_after_write" type="checkbox" checked>
-              <span>cpa_probe_after_write（授权后测活）</span>
-            </label>
-<label class="field">
-              <span>cpa_probe_delay_sec（注册后测活延时秒，默认5）</span>
-              <input name="cpa_probe_delay_sec" type="number" min="0" max="120" step="0.5" value="5">
-            </label>
-            <label>
-              <span>自动生成 CPA 授权</span>
-              <input name="cpa_export_enabled" type="checkbox">
-            </label>
-            <label>
-              <span>生成后导入 CPA</span>
-              <input name="cpa_copy_to_hotload" type="checkbox">
-            </label>
-            <label>
-              <span>xAI 授权浏览器（无头）</span>
-              <input name="cpa_headless" type="checkbox" aria-label="xAI 授权浏览器无头模式">
-            </label>
-            <label>
-              <span>推送 CPA 授权到远程</span>
-              <input name="cpa_cloud_upload_enabled" type="checkbox">
-            </label>
-            <label>
-              <span>远程 CPA 管理地址</span>
-              <input name="cpa_cloud_api_base" placeholder="https://cpa.example.com">
-            </label>
-            <label>
-              <span>远程 CPA 管理密钥</span>
-              <input name="cpa_cloud_management_key" type="password" autocomplete="off">
-            </label>
-            <label>
-              <span>远程上传超时（秒）</span>
-              <input name="cpa_cloud_upload_timeout" type="number" min="5" max="180">
-            </label>
-            <label>
-              <span>远程上传重试次数</span>
-              <input name="cpa_cloud_upload_retries" type="number" min="1" max="10">
-            </label>
-            <label>
-              <span>CPA 队列失败重试次数</span>
-              <input name="cpa_batch_retry_count" type="number" min="0" max="5" title="每个账号失败后额外重试次数，0 表示不重试">
-            </label>
-            <label>
-              <span>浏览器复用回收间隔（账号数）</span>
-              <input name="cpa_mint_browser_recycle_every" type="number" min="0" max="200" title="每处理 N 个账号重启一次浏览器，0 表示不回收">
-            </label>
-            <label>
-              <span>推送前测活</span>
-              <input name="cpa_health_check_before_upload" type="checkbox" title="推送远程 CPA 前先用 chat/completions 测活，失败则放弃推送">
-            </label>
-            <label>
-              <span>测活超时（秒）</span>
-              <input name="cpa_health_check_timeout" type="number" min="3" max="120" title="测活 HTTP 超时">
-            </label>
-            <label>
-              <span>测活模型</span>
-              <input name="cpa_health_check_model" placeholder="grok-4.5" title="测活请求使用的模型">
-            </label>
-            <label class="full">
-              <span>测活请求 Headers</span>
-              <textarea name="cpa_health_check_headers" rows="6" placeholder="x-grok-client-version: 0.2.93&#10;User-Agent: grok-shell/0.2.93 (linux; x86_64)" title="每行一条 Header，格式 Key: Value 或 Key=Value；也可填 JSON 对象。Authorization 由 access_token 自动生成，无需配置"></textarea>
-            </label>
-            <label>
-              <span>合并授权文件 headers</span>
-              <input name="cpa_health_check_use_file_headers" type="checkbox" title="是否合并 CPA 授权 JSON 内的 headers 字段（默认开启）">
-            </label>
-            <label>
-              <span>推送 Sub2API（远程）</span>
-              <input name="sub2api_upload_enabled" type="checkbox" title="授权成功后推送到 Sub2API">
-            </label>
-            <label>
-              <span>Sub2API 本地导出</span>
-              <input name="sub2api_export_enabled" type="checkbox" title="导出 Sub2API 格式 JSON 到本地目录">
-            </label>
-            <label>
-              <span>Sub2API 地址</span>
-              <input name="sub2api_api_base" placeholder="https://sub2api.example.com">
-            </label>
-            <label>
-              <span>Sub2API API Key</span>
-              <input name="sub2api_api_key" type="password" autocomplete="off" placeholder="x-api-key">
-            </label>
-            <label>
-              <span>Sub2API 超时（秒）</span>
-              <input name="sub2api_upload_timeout" type="number" min="5" max="180">
-            </label>
-            <label>
-              <span>Sub2API 重试次数</span>
-              <input name="sub2api_upload_retries" type="number" min="1" max="10">
-            </label>
-            <label>
-              <span>Sub2API platform</span>
-              <input name="sub2api_platform" placeholder="openai">
-            </label>
-            <label>
-              <span>Sub2API 账号类型</span>
-              <input name="sub2api_account_type" placeholder="oauth | apikey | upstream" title="oauth=刷新型; apikey=把 access_token 当 key">
-            </label>
-            <label>
-              <span>Sub2API concurrency</span>
-              <input name="sub2api_account_concurrency" type="number" min="1" max="200">
-            </label>
-            <label>
-              <span>Sub2API priority</span>
-              <input name="sub2api_account_priority" type="number" min="0" max="1000">
-            </label>
-            <label>
-              <span>Sub2API group_ids</span>
-              <input name="sub2api_account_group_ids" placeholder="1,2,3" title="逗号分隔分组 ID">
-            </label>
-            <label>
-              <span>Sub2API 默认代理</span>
-              <input name="sub2api_default_proxy" placeholder="http://user:pass@host:port">
-            </label>
-            <label>
-              <span>Sub2API 本地导出目录</span>
-              <input name="sub2api_local_export_dir" placeholder="./sub2api_exports">
-            </label>
-            <label>
-              <span>导出时写本地文件</span>
-              <input name="sub2api_local_export" type="checkbox" title="开启本地导出时是否写文件">
-            </label>
-            <div class="form-actions full">
-              <button class="button" type="submit">保存默认配置</button>
+            </details>
+
+            <details class="settings-section" open>
+              <summary>临时邮箱（DuckMail / TempMail）</summary>
+              <div class="settings-grid">
+                <label>
+                  <span>邮箱服务类型 <em>email_provider</em></span>
+                  <select name="email_provider">
+                    <option value="duckmail">duckmail / temp_mail（默认）</option>
+                    <option value="outmail">outmail（Outlook / anonymous）</option>
+                  </select>
+                </label>
+                <label>
+                  <span>邮箱 API Base <em>temp_mail_api_base</em></span>
+                  <input name="temp_mail_api_base" placeholder="https://api.duckmail.sbs">
+                </label>
+                <label>
+                  <span>邮箱域名 <em>temp_mail_domain</em></span>
+                  <input name="temp_mail_domain" placeholder="a.com,b.com">
+                </label>
+                <label>
+                  <span>Admin 密码 / API Key <em>temp_mail_admin_password</em></span>
+                  <input name="temp_mail_admin_password" type="password" autocomplete="off" placeholder="admin / dk_xxx">
+                </label>
+                <label>
+                  <span>站点密码 <em>temp_mail_site_password</em></span>
+                  <input name="temp_mail_site_password" type="password" autocomplete="off" placeholder="可选">
+                </label>
+                <label class="full">
+                  <span>已移除域名 <em>temp_mail_domains_removed</em></span>
+                  <input name="temp_mail_domains_removed" placeholder="auto-removed domains">
+                </label>
+                <label>
+                  <span>域名失败阈值 <em>domain_auth_fail_threshold</em></span>
+                  <input name="domain_auth_fail_threshold" type="number" min="1" max="100" value="3">
+                </label>
+                <label class="checkbox-field">
+                  <input name="domain_auth_fail_auto_remove" type="checkbox" checked>
+                  <span>域名失败自动移除 <em>domain_auth_fail_auto_remove</em></span>
+                </label>
+              </div>
+            </details>
+
+            <details class="settings-section">
+              <summary>Outmail（账号池 / 匿名邮箱）</summary>
+              <div class="settings-grid">
+                <label>
+                  <span>Outmail 地址 <em>outmail_api_base</em></span>
+                  <input name="outmail_api_base" placeholder="https://mail.example.com">
+                </label>
+                <label>
+                  <span>API Key <em>outmail_api_key</em></span>
+                  <input name="outmail_api_key" type="password" autocomplete="off" placeholder="X-API-Key">
+                </label>
+                <label class="full">
+                  <span>Session Cookie（匿名邮箱 CSRF） <em>outmail_session_cookie</em></span>
+                  <input name="outmail_session_cookie" placeholder="session=...">
+                </label>
+                <label>
+                  <span>访问代理 <em>outmail_proxy</em></span>
+                  <input name="outmail_proxy" placeholder="空=直连">
+                </label>
+                <label>
+                  <span>分组 ID <em>outmail_group_id</em></span>
+                  <input name="outmail_group_id" placeholder="可选">
+                </label>
+                <label class="checkbox-field">
+                  <input name="outmail_plus_alias" type="checkbox" checked>
+                  <span>启用 Plus 别名 <em>outmail_plus_alias</em></span>
+                </label>
+                <label>
+                  <span>每号别名次数 <em>outmail_plus_alias_count</em></span>
+                  <input name="outmail_plus_alias_count" type="number" min="1" max="1000" value="1">
+                </label>
+                <label>
+                  <span>别名后缀长度 <em>outmail_alias_suffix_len</em></span>
+                  <input name="outmail_alias_suffix_len" type="number" min="2" max="32" value="6">
+                </label>
+                <label>
+                  <span>拉信条数 <em>outmail_fetch_top</em></span>
+                  <input name="outmail_fetch_top" type="number" min="1" max="50" value="10">
+                </label>
+                <label>
+                  <span>收信超时（秒） <em>outmail_poll_timeout_sec</em></span>
+                  <input name="outmail_poll_timeout_sec" type="number" min="30" max="600" value="180">
+                </label>
+                <label>
+                  <span>轮询间隔（秒） <em>outmail_poll_interval_sec</em></span>
+                  <input name="outmail_poll_interval_sec" type="number" min="1" max="60" value="5">
+                </label>
+                <label>
+                  <span>时间重叠（秒） <em>outmail_since_padding_sec</em></span>
+                  <input name="outmail_since_padding_sec" type="number" min="0" max="300" value="30">
+                </label>
+                <label>
+                  <span>发件人过滤 <em>outmail_from_filter</em></span>
+                  <input name="outmail_from_filter" placeholder="x.ai">
+                </label>
+                <label>
+                  <span>主题过滤 <em>outmail_subject_filter</em></span>
+                  <input name="outmail_subject_filter" placeholder="xAI">
+                </label>
+                <label class="checkbox-field">
+                  <input name="outmail_exclude_used" type="checkbox" checked>
+                  <span>跳过已用主邮箱 <em>outmail_exclude_used</em></span>
+                </label>
+                <label>
+                  <span>已用邮箱记录文件 <em>outmail_used_file</em></span>
+                  <input name="outmail_used_file" placeholder="outmail_used_mailboxes.txt">
+                </label>
+              </div>
+              <div class="settings-subhead">匿名临时邮箱</div>
+              <div class="settings-grid">
+                <label class="checkbox-field">
+                  <input name="outmail_anonymous_enabled" type="checkbox">
+                  <span>启用匿名邮箱 <em>outmail_anonymous_enabled</em></span>
+                </label>
+                <label>
+                  <span>匿名 Provider <em>outmail_anonymous_provider</em></span>
+                  <select name="outmail_anonymous_provider">
+                    <option value="cloudflare">cloudflare</option>
+                    <option value="duckmail">duckmail</option>
+                    <option value="gptmail">gptmail</option>
+                  </select>
+                </label>
+                <label class="full">
+                  <span>匿名域名（多域名逗号分隔） <em>outmail_anonymous_domain</em></span>
+                  <input name="outmail_anonymous_domain" placeholder="a.com,b.com,c.com">
+                </label>
+                <label>
+                  <span>用户名前缀 <em>outmail_anonymous_username_prefix</em></span>
+                  <input name="outmail_anonymous_username_prefix" placeholder="可选">
+                </label>
+                <label>
+                  <span>匿名邮箱密码 <em>outmail_anonymous_password</em></span>
+                  <input name="outmail_anonymous_password" type="password" autocomplete="off" placeholder="可选">
+                </label>
+                <label class="checkbox-field">
+                  <input name="outmail_anonymous_delete_after" type="checkbox">
+                  <span>用完删除匿名邮箱 <em>outmail_anonymous_delete_after</em></span>
+                </label>
+              </div>
+            </details>
+
+            <details class="settings-section">
+              <summary>CPA 授权与测活</summary>
+              <div class="settings-grid">
+                <label class="checkbox-field">
+                  <input name="cpa_export_enabled" type="checkbox" checked>
+                  <span>启用 CPA 授权导出 <em>cpa_export_enabled</em></span>
+                </label>
+                <label class="checkbox-field">
+                  <input name="cpa_prefer_sso_oauth" type="checkbox" checked>
+                  <span>优先 SSO 纯 HTTP OAuth <em>cpa_prefer_sso_oauth</em></span>
+                </label>
+                <label class="checkbox-field">
+                  <input name="cpa_probe_after_write" type="checkbox" checked>
+                  <span>授权后测活 <em>cpa_probe_after_write</em></span>
+                </label>
+                <label class="checkbox-field">
+                  <input name="cpa_probe_required" type="checkbox">
+                  <span>测活失败则整体失败 <em>cpa_probe_required</em></span>
+                </label>
+                <label>
+                  <span>测活前延时（秒） <em>cpa_probe_delay_sec</em></span>
+                  <input name="cpa_probe_delay_sec" type="number" min="0" max="120" step="0.5" value="5">
+                </label>
+                <label>
+                  <span>Mint 超时（秒） <em>cpa_mint_timeout_sec</em></span>
+                  <input name="cpa_mint_timeout_sec" type="number" min="60" max="900" value="300">
+                </label>
+                <label>
+                  <span>授权文件目录 <em>cpa_auth_dir</em></span>
+                  <input name="cpa_auth_dir" placeholder="./cpa_auths">
+                </label>
+                <label>
+                  <span>CPA 专用代理 <em>cpa_proxy</em></span>
+                  <input name="cpa_proxy" placeholder="空=直连">
+                </label>
+                <label class="checkbox-field">
+                  <input name="cpa_copy_to_hotload" type="checkbox">
+                  <span>复制到热加载目录 <em>cpa_copy_to_hotload</em></span>
+                </label>
+                <label>
+                  <span>热加载目录 <em>cpa_hotload_dir</em></span>
+                  <input name="cpa_hotload_dir" placeholder="">
+                </label>
+                <label class="checkbox-field">
+                  <input name="cpa_headless" type="checkbox">
+                  <span>浏览器无头模式（易被 CF 拦，不建议） <em>cpa_headless</em></span>
+                </label>
+                <label>
+                  <span>浏览器复用次数 <em>cpa_mint_browser_recycle_every</em></span>
+                  <input name="cpa_mint_browser_recycle_every" type="number" min="0" max="200" value="15">
+                </label>
+                <label>
+                  <span>批量失败重试 <em>cpa_batch_retry_count</em></span>
+                  <input name="cpa_batch_retry_count" type="number" min="0" max="5" value="1">
+                </label>
+              </div>
+              <div class="settings-subhead">推送前健康检查</div>
+              <div class="settings-grid">
+                <label class="checkbox-field">
+                  <input name="cpa_health_check_before_upload" type="checkbox" checked>
+                  <span>推送前测活 <em>cpa_health_check_before_upload</em></span>
+                </label>
+                <label class="checkbox-field">
+                  <input name="cpa_health_check_use_file_headers" type="checkbox" checked>
+                  <span>合并授权文件 headers <em>cpa_health_check_use_file_headers</em></span>
+                </label>
+                <label>
+                  <span>测活超时（秒） <em>cpa_health_check_timeout</em></span>
+                  <input name="cpa_health_check_timeout" type="number" min="3" max="120" value="15">
+                </label>
+                <label>
+                  <span>测活模型 <em>cpa_health_check_model</em></span>
+                  <input name="cpa_health_check_model" placeholder="grok-4.5">
+                </label>
+                <label class="full">
+                  <span>额外 Headers <em>cpa_health_check_headers</em></span>
+                  <textarea name="cpa_health_check_headers" rows="4" placeholder="Key: Value"></textarea>
+                </label>
+              </div>
+            </details>
+
+            <details class="settings-section">
+              <summary>远程 CPA 推送</summary>
+              <div class="settings-grid">
+                <label class="checkbox-field">
+                  <input name="cpa_cloud_upload_enabled" type="checkbox">
+                  <span>启用远程 CPA 推送 <em>cpa_cloud_upload_enabled</em></span>
+                </label>
+                <label>
+                  <span>CPA 管理地址 <em>cpa_cloud_api_base</em></span>
+                  <input name="cpa_cloud_api_base" placeholder="https://your-cpa-host">
+                </label>
+                <label>
+                  <span>Management Key <em>cpa_cloud_management_key</em></span>
+                  <input name="cpa_cloud_management_key" type="password" autocomplete="off" placeholder="">
+                </label>
+                <label>
+                  <span>超时（秒） <em>cpa_cloud_upload_timeout</em></span>
+                  <input name="cpa_cloud_upload_timeout" type="number" min="5" max="180" value="30">
+                </label>
+                <label>
+                  <span>重试次数 <em>cpa_cloud_upload_retries</em></span>
+                  <input name="cpa_cloud_upload_retries" type="number" min="1" max="10" value="3">
+                </label>
+              </div>
+            </details>
+
+            <details class="settings-section">
+              <summary>Sub2API 推送 / 导出</summary>
+              <div class="settings-grid">
+                <label class="checkbox-field">
+                  <input name="sub2api_upload_enabled" type="checkbox">
+                  <span>推送到远程 Sub2API <em>sub2api_upload_enabled</em></span>
+                </label>
+                <label class="checkbox-field">
+                  <input name="sub2api_export_enabled" type="checkbox">
+                  <span>启用本地导出 <em>sub2api_export_enabled</em></span>
+                </label>
+                <label class="checkbox-field">
+                  <input name="sub2api_local_export" type="checkbox" checked>
+                  <span>导出时写本地文件 <em>sub2api_local_export</em></span>
+                </label>
+                <label>
+                  <span>Sub2API 地址 <em>sub2api_api_base</em></span>
+                  <input name="sub2api_api_base" placeholder="https://sub2api.example.com">
+                </label>
+                <label>
+                  <span>API Key <em>sub2api_api_key</em></span>
+                  <input name="sub2api_api_key" type="password" autocomplete="off" placeholder="x-api-key">
+                </label>
+                <label>
+                  <span>超时（秒） <em>sub2api_upload_timeout</em></span>
+                  <input name="sub2api_upload_timeout" type="number" min="5" max="180" value="30">
+                </label>
+                <label>
+                  <span>重试次数 <em>sub2api_upload_retries</em></span>
+                  <input name="sub2api_upload_retries" type="number" min="1" max="10" value="3">
+                </label>
+                <label>
+                  <span>platform <em>sub2api_platform</em></span>
+                  <input name="sub2api_platform" placeholder="openai">
+                </label>
+                <label>
+                  <span>account_type <em>sub2api_account_type</em></span>
+                  <input name="sub2api_account_type" placeholder="oauth">
+                </label>
+                <label>
+                  <span>concurrency <em>sub2api_account_concurrency</em></span>
+                  <input name="sub2api_account_concurrency" type="number" min="1" max="200" value="10">
+                </label>
+                <label>
+                  <span>priority <em>sub2api_account_priority</em></span>
+                  <input name="sub2api_account_priority" type="number" min="0" max="1000" value="1">
+                </label>
+                <label>
+                  <span>load_factor <em>sub2api_account_load_factor</em></span>
+                  <input name="sub2api_account_load_factor" type="number" min="1" max="10000" value="10">
+                </label>
+                <label>
+                  <span>rate_multiplier <em>sub2api_account_rate_multiplier</em></span>
+                  <input name="sub2api_account_rate_multiplier" type="number" min="0" step="0.1" value="1">
+                </label>
+                <label>
+                  <span>group_ids <em>sub2api_account_group_ids</em></span>
+                  <input name="sub2api_account_group_ids" placeholder="1,2,3">
+                </label>
+                <label>
+                  <span>proxy <em>sub2api_default_proxy</em></span>
+                  <input name="sub2api_default_proxy" placeholder="http://host:port">
+                </label>
+                <label class="full">
+                  <span>本地导出目录 <em>sub2api_local_export_dir</em></span>
+                  <input name="sub2api_local_export_dir" placeholder="./sub2api_exports">
+                </label>
+              </div>
+            </details>
+
+            <div class="form-actions full settings-save-bar">
+              <button class="button button-primary" type="submit">保存默认配置</button>
               <div id="settingsMessage" class="form-message"></div>
             </div>
-          </form>
+</form>
 
           <div class="health-block">
             <div class="panel-head">
@@ -587,6 +706,6 @@
   <script>
     window.__DEFAULTS__ = {{ defaults|safe }};
   </script>
-  <script src="/static/app.js?v=1784279504" charset="utf-8"></script>
+  <script src="/static/app.js?v=1784342935" charset="utf-8"></script>
 </body>
 </html>

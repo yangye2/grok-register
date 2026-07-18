@@ -2791,8 +2791,19 @@ def run_account_sso_oauth(
 def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
     """Validate and enqueue accounts into the global sequential CPA queue."""
     mode = str(mode or "authorize_and_push").strip()
-    if mode not in {"authorize_and_push", "push_only", "push_sub2api"}:
-        raise HTTPException(status_code=400, detail="mode 仅支持 authorize_and_push / push_only / push_sub2api")
+    allowed_modes = {
+        "authorize_and_push",
+        "push_only",
+        "push_sub2api",
+        "probe_only",
+        "refresh_only",
+        "oauth_only",
+    }
+    if mode not in allowed_modes:
+        raise HTTPException(
+            status_code=400,
+            detail="mode ??? authorize_and_push / push_only / push_sub2api / probe_only / refresh_only / oauth_only",
+        )
 
     cloud_error = _validate_cpa_cloud_config(mode)
     if cloud_error:
@@ -2945,7 +2956,13 @@ def run_account_cpa_batch(account_ids: list[int], mode: str) -> None:
 
 
 
-def build_accounts_where_clause(task_id: int | None, search: str) -> tuple[str, list[Any]]:
+def build_accounts_where_clause(
+    task_id: int | None,
+    search: str,
+    cpa_status: str | None = None,
+    token_status: str | None = None,
+    sso_alive: str | None = None,
+) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
 
@@ -2962,6 +2979,25 @@ def build_accounts_where_clause(task_id: int | None, search: str) -> tuple[str, 
             ")"
         )
         params.extend([like, like, like, like])
+
+    cpa = (cpa_status or "").strip().lower()
+    if cpa and cpa != "all":
+        clauses.append("LOWER(COALESCE(cpa_status, '')) = ?")
+        params.append(cpa)
+
+    tok = (token_status or "").strip().lower()
+    if tok and tok != "all":
+        clauses.append("LOWER(COALESCE(token_status, '')) = ?")
+        params.append(tok)
+
+    sso = (sso_alive or "").strip().lower()
+    if sso and sso != "all":
+        if sso in {"1", "true", "alive", "yes"}:
+            clauses.append("sso_alive = 1")
+        elif sso in {"0", "false", "dead", "no"}:
+            clauses.append("sso_alive = 0")
+        elif sso in {"unknown", "null", "none", "unset"}:
+            clauses.append("sso_alive IS NULL")
 
     if not clauses:
         return "", params
@@ -3575,11 +3611,16 @@ def restore_email_domain(payload: dict[str, Any]) -> dict[str, Any]:
 def list_accounts(
     task_id: int | None = Query(None, ge=1),
     search: str = Query(""),
+    cpa_status: str = Query(""),
+    token_status: str = Query(""),
+    sso_alive: str = Query(""),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
 ) -> dict[str, Any]:
     sync_all_account_records()
-    where_clause, where_params = build_accounts_where_clause(task_id, search)
+    where_clause, where_params = build_accounts_where_clause(
+        task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive
+    )
     count_row = fetch_one(
         f"SELECT COUNT(*) AS c FROM accounts{where_clause}",
         tuple(where_params),
@@ -3616,10 +3657,15 @@ class AccountIdsPayload(BaseModel):
 def list_account_ids(
     task_id: int | None = Query(None, ge=1),
     search: str = Query(""),
+    cpa_status: str = Query(""),
+    token_status: str = Query(""),
+    sso_alive: str = Query(""),
 ) -> dict[str, Any]:
     """Return all account ids matching current filters (for cross-page select-all)."""
     sync_all_account_records()
-    where_clause, where_params = build_accounts_where_clause(task_id, search)
+    where_clause, where_params = build_accounts_where_clause(
+        task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive
+    )
     rows = fetch_all(
         f"SELECT id FROM accounts{where_clause} ORDER BY created_at DESC, id DESC",
         tuple(where_params),
@@ -3677,6 +3723,52 @@ def cancel_cpa_queue() -> dict[str, Any]:
         cpa_queue_state["cancel_requested"] = True
         cpa_queue_state["message"] = "正在停止：当前账号完成后取消剩余排队任务"
     return {"ok": True, "message": "已请求停止 CPA 队列", "queue": _cpa_queue_snapshot()}
+
+
+
+
+class AccountExportPayload(BaseModel):
+    account_ids: list[int] = Field(default_factory=list)
+
+
+@app.post("/api/accounts/export")
+def export_accounts_csv(payload: AccountExportPayload) -> Any:
+    """Export selected accounts as plain text lines:
+    email----password----sso
+    """
+    from fastapi.responses import Response
+
+    ids = [int(x) for x in (payload.account_ids or []) if int(x) > 0]
+    if not ids:
+        raise HTTPException(status_code=400, detail="account_ids cannot be empty")
+    rows: list[sqlite3.Row] = []
+    for aid in ids:
+        row = fetch_one("SELECT * FROM accounts WHERE id = ?", (aid,))
+        if row is not None:
+            rows.append(row)
+    if not rows:
+        raise HTTPException(status_code=404, detail="no accounts found")
+
+    lines: list[str] = []
+    for row in rows:
+        email = str(row_get(row, "email", "") or "").strip()
+        password = str(row_get(row, "password", "") or "").strip()
+        sso = str(row_get(row, "sso", "") or "").strip()
+        if not email and not sso:
+            continue
+        lines.append(f"{email}----{password}----{sso}")
+
+    if not lines:
+        raise HTTPException(status_code=404, detail="no valid account lines")
+
+    content = "\n".join(lines) + "\n"
+    filename = f"accounts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    return Response(
+        content=content.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
 
 
 @app.get("/api/accounts/cpa/queue/export")
