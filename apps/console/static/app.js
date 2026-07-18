@@ -216,7 +216,11 @@
       settingsFormEl.elements.sub2api_upload_retries.value = defaults.sub2api_upload_retries || 3;
     }
     if (settingsFormEl.elements.sub2api_platform) {
-      settingsFormEl.elements.sub2api_platform.value = defaults.sub2api_platform || "grok";
+      {
+      let p = String(defaults.sub2api_platform || "grok").trim().toLowerCase() || "grok";
+      if (p === "openai" || p === "chatgpt" || p === "codex") p = "grok";
+      settingsFormEl.elements.sub2api_platform.value = p;
+    }
     }
     if (settingsFormEl.elements.sub2api_account_type) {
       settingsFormEl.elements.sub2api_account_type.value = defaults.sub2api_account_type || "oauth";

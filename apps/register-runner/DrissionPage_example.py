@@ -26,14 +26,14 @@ def load_cpa_config() -> dict:
 
 
 def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
-    """注册完成后的授权 + 测活（与账号管理「单独 OAuth / 单独测活」同一套逻辑）。
+    """注册完成后的授权 + 测活。
 
-    对齐 apps/console/app.py:
-      - OAuth: export_cpa_xai_via_sso（同 run_account_sso_oauth，纯 HTTP SSO device-flow）
-      - 延时: cpa_probe_delay_sec（默认 5s）
-      - 测活: check_account_liveness（同 run_account_token_probe）
-    可选：测活通过后再做 cloud / sub2api 推送（注册任务自动化，账号管理单独 OAuth 不自动推）。
-    说明：不再走浏览器密码 mint 作为注册后主路径，与单独 OAuth 一致。
+    与账号管理对齐说明：
+      - OAuth 成功 = 与「单独 OAuth」一致（export_cpa_xai_via_sso）
+      - 测活 = 与「单独测活」同一 check_account_liveness
+      - 测活失败时：先尝试一次 Token 续期（同「续期」refresh_cpa_auth_file），再复测
+      - 授权文件已写出后，测活失败不再把整单 ok 打成 false（避免「测活失败但续期能成」被当成注册失败）
+    可选：测活通过后再 cloud / sub2api 推送。
     """
     import time
 
@@ -123,13 +123,16 @@ def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
     result["ok"] = True
     log(f"[cpa-oauth] success path={auth_path}")
 
-    # ---- 2) 延时 + 单独测活（同 run_account_token_probe）----
+    # ---- 2) 延时 + 测活（同账号测活；失败时补一轮续期再测，对齐「续期能成功」场景）----
     if do_probe and auth_path:
         if probe_delay > 0:
             log(f"[cpa-probe] wait {probe_delay:.1f}s before liveness (cpa_probe_delay_sec)")
             time.sleep(probe_delay)
         try:
-            from cpa_xai.token_maintain import check_account_liveness  # type: ignore
+            from cpa_xai.token_maintain import (  # type: ignore
+                check_account_liveness,
+                refresh_cpa_auth_file,
+            )
 
             proxy = (
                 str(
@@ -140,23 +143,64 @@ def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
                 ).strip()
                 or None
             )
-            live = check_account_liveness(
-                auth_path=auth_path,
-                sso=sso_val or None,
-                proxy=proxy,
-                probe_api=True,
-                probe_sso=bool(sso_val),
-                auto_refresh=False,
-                force_refresh=False,
-                skew_seconds=float(cfg.get("cpa_token_refresh_skew_sec", 300) or 300),
-                model=str(cfg.get("cpa_health_check_model") or "grok-4.5"),
-                timeout=float(cfg.get("cpa_health_check_timeout", 15) or 15),
-                log=lambda m: log(f"[cpa-probe] {m}"),
-            )
+            skew = float(cfg.get("cpa_token_refresh_skew_sec", 300) or 300)
+            model = str(cfg.get("cpa_health_check_model") or "grok-4.5")
+            timeout = float(cfg.get("cpa_health_check_timeout", 15) or 15)
+
+            def _run_probe(*, auto_refresh: bool, force_refresh: bool, tag: str) -> dict:
+                return check_account_liveness(
+                    auth_path=auth_path,
+                    sso=sso_val or None,
+                    proxy=proxy,
+                    probe_api=True,
+                    probe_sso=bool(sso_val),
+                    auto_refresh=auto_refresh,
+                    force_refresh=force_refresh,
+                    skew_seconds=skew,
+                    model=model,
+                    timeout=timeout,
+                    log=lambda m: log(f"[cpa-probe{tag}] {m}"),
+                )
+
+            # 与账号单独测活一致：默认不强制续期；失败后再走「续期」逻辑
+            live = _run_probe(auto_refresh=False, force_refresh=False, tag="")
+            if not live.get("alive"):
+                log("[cpa-probe] first liveness failed; try one refresh (same as account 续期) then re-probe")
+                try:
+                    ref = refresh_cpa_auth_file(
+                        auth_path,
+                        proxy=proxy,
+                        skew_seconds=skew,
+                        force=True,
+                        sso=sso_val or None,
+                        allow_sso_fallback=bool(sso_val),
+                        persist=True,
+                        log=lambda m: log(f"[cpa-refresh] {m}"),
+                    )
+                    result["refresh_retry"] = {
+                        k: v for k, v in (ref or {}).items() if k != "auth"
+                    }
+                    if ref.get("path"):
+                        auth_path = str(ref.get("path") or auth_path)
+                        result["path"] = auth_path
+                        result["cpa_path"] = auth_path
+                    log(
+                        f"[cpa-refresh] ok={ref.get('ok')} renewed={ref.get('renewed')} "
+                        f"source={ref.get('source')} err={ref.get('error') or ''}"
+                    )
+                except Exception as ref_exc:
+                    log(f"[cpa-refresh] exception: {ref_exc}")
+                    result["refresh_retry_error"] = str(ref_exc)
+                # 稍等再测，避免刚 mint/refresh 立刻 chat 失败
+                extra_wait = min(3.0, max(0.0, probe_delay))
+                if extra_wait > 0:
+                    log(f"[cpa-probe] wait {extra_wait:.1f}s after refresh before re-probe")
+                    time.sleep(extra_wait)
+                live = _run_probe(auto_refresh=False, force_refresh=False, tag="-retry")
+
             sso_res = live.get("sso") if isinstance(live.get("sso"), dict) else {}
             health = live.get("health") if isinstance(live.get("health"), dict) else {}
 
-            # token_status 映射与 run_account_token_probe 一致
             if live.get("alive"):
                 token_status = "alive"
             elif sso_res.get("alive") is False and not auth_path:
@@ -174,18 +218,24 @@ def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
             result["alive"] = bool(live.get("alive"))
 
             if not live.get("alive"):
-                result["ok"] = False
+                # 授权文件已存在：不把整单 ok 打 false（与「账号里续期还能成功」一致）
+                result["probe_ok"] = False
                 result["error"] = (
                     live.get("error")
                     or health.get("message")
                     or "liveness_failed"
                 )
+                # 仅当配置强制要求测活才整单失败
+                if bool(cfg.get("cpa_probe_required", False)):
+                    result["ok"] = False
                 log(
                     f"[cpa-probe] FAIL status={token_status} "
                     f"alive={live.get('alive')} sso={sso_res.get('alive')} "
-                    f"health={health.get('ok')} err={result.get('error')}"
+                    f"health={health.get('ok')} err={result.get('error')} "
+                    f"(auth file kept, ok={result.get('ok')})"
                 )
             else:
+                result["probe_ok"] = True
                 log(
                     f"[cpa-probe] PASS status=alive sso={sso_res.get('alive')} "
                     f"health={health.get('ok')}"
@@ -194,6 +244,7 @@ def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
             log(f"[cpa-probe] liveness exception: {exc}")
             result["liveness_error"] = str(exc)
             result["token_status"] = "error"
+            result["probe_ok"] = False
             if bool(cfg.get("cpa_probe_required", False)):
                 result["ok"] = False
                 result["error"] = f"liveness: {exc}"

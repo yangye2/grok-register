@@ -1176,7 +1176,10 @@ def merged_defaults() -> dict[str, Any]:
     base["sub2api_upload_retries"] = _as_nonneg_int(base.get("sub2api_upload_retries"), 3, maximum=10)
     if base["sub2api_upload_retries"] < 1:
         base["sub2api_upload_retries"] = 1
-    base["sub2api_platform"] = str(base.get("sub2api_platform") or "grok").strip() or "grok"
+    base["sub2api_platform"] = str(base.get("sub2api_platform") or "grok").strip().lower() or "grok"
+    # 历史默认 openai 对 xAI 账号不正确，自动纠正为 grok
+    if base["sub2api_platform"] in {"openai", "chatgpt", "codex"}:
+        base["sub2api_platform"] = "grok"
     acct_type = str(base.get("sub2api_account_type") or "oauth").strip().lower() or "oauth"
     if acct_type not in {"oauth", "apikey", "upstream"}:
         acct_type = "oauth"
@@ -1655,6 +1658,11 @@ def build_account_cpa_config(*, force_cloud_upload: bool = False) -> dict[str, A
     ).strip()
     account_cpa_config["sub2api_upload_enabled"] = bool(account_cpa_config.get("sub2api_upload_enabled", False))
     account_cpa_config["sub2api_export_enabled"] = bool(account_cpa_config.get("sub2api_export_enabled", False))
+    # 推送 xAI 授权固定 platform=grok
+    plat = str(account_cpa_config.get("sub2api_platform") or "grok").strip().lower() or "grok"
+    if plat in {"openai", "chatgpt", "codex", ""}:
+        plat = "grok"
+    account_cpa_config["sub2api_platform"] = plat
     return account_cpa_config
 
 

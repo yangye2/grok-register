@@ -285,14 +285,29 @@ def build_sub2api_account_from_cpa(
     if not email:
         email = "unknown"
 
-    raw_platform = str(push.get("platform") or "grok").strip().lower() or "grok"
+    # CPA xAI 授权一律推成 platform=grok（sub2api 官方 Grok 平台）。
+    # 历史配置里若仍保存 sub2api_platform=openai，会错误显示为 openai，这里强制纠正。
     provider = str(auth.get("type") or auth.get("provider") or auth.get("platform") or "xai").strip().lower()
-    if raw_platform in PLATFORM_MAP:
+    base_hint = str(auth.get("base_url") or (auth.get("credentials") or {}).get("base_url") or "").lower()
+    is_xai_auth = (
+        provider in {"xai", "grok", ""}
+        or "cli-chat-proxy.grok.com" in base_hint
+        or "api.x.ai" in base_hint
+        or "x.ai" in base_hint
+        or str(auth.get("auth_kind") or "").lower() in {"oauth", "sso_oauth", ""}
+    )
+    raw_platform = str(push.get("platform") or "grok").strip().lower() or "grok"
+    if is_xai_auth:
+        platform = "grok"
+        if raw_platform and raw_platform not in {"grok", "xai"}:
+            # 忽略错误的 openai 等历史配置，避免推到错误平台
+            pass
+    elif raw_platform in PLATFORM_MAP:
         platform = PLATFORM_MAP[raw_platform]
     elif provider in PLATFORM_MAP:
         platform = PLATFORM_MAP[provider]
     else:
-        platform = raw_platform
+        platform = raw_platform or "grok"
 
     account_type = str(push.get("account_type") or "oauth").lower()
     if account_type not in {"oauth", "apikey", "upstream"}:
@@ -584,7 +599,12 @@ class Sub2APIClient:
         if push.get("default_proxy"):
             proxy_obj = parse_sub2api_proxy(str(push["default_proxy"]))
         account_item = build_sub2api_account_from_cpa(auth, push, proxy_obj=proxy_obj)
-
+        # grok-register 只推 xAI 账号：Sub2 平台固定 grok（避免配置残留 openai）
+        if str(account_item.get("type") or "oauth").lower() != "apikey":
+            account_item["platform"] = "grok"
+        else:
+            # API Key 账号也用 grok 平台（sub2api: Grok → API Key）
+            account_item["platform"] = "grok"
         # Prefer create API when we have enough credentials
         ok, msg = self.create_account(account_item)
         if ok:
@@ -672,6 +692,12 @@ def upload_cpa_auth_to_sub2api(
     retries = _as_int(config.get("sub2api_upload_retries", 3), 3, 1, 10)
     client = Sub2APIClient(api_base, key, timeout=timeout)
     settings = get_sub2api_push_settings(config)
+    # 再次保证 xAI → grok
+    settings = {**settings, "platform": "grok"}
+    log(
+        f"[sub2api] push settings platform={settings.get('platform')} "
+        f"type={settings.get('account_type')} concurrency={settings.get('concurrency')}"
+    )
 
     last_error = "upload_failed"
     for attempt in range(1, retries + 1):
