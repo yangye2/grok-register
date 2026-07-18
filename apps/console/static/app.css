@@ -594,9 +594,9 @@ button {
 
 .accounts-table th:nth-child(10),
 .accounts-table td:nth-child(10) {
-  width: 200px;
-  min-width: 180px;
-  max-width: 240px;
+  width: 168px;
+  min-width: 150px;
+  max-width: 200px;
   overflow: visible;
   white-space: nowrap;
   text-overflow: clip;

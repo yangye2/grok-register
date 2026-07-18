@@ -989,7 +989,7 @@ class SystemSettings(BaseModel):
     sub2api_api_key: str | None = None
     sub2api_upload_timeout: int = Field(default=30, ge=5, le=180)
     sub2api_upload_retries: int = Field(default=3, ge=1, le=10)
-    sub2api_platform: str = "openai"
+    sub2api_platform: str = "grok"
     sub2api_account_type: str = "oauth"
     sub2api_account_concurrency: int = Field(default=10, ge=1, le=200)
     sub2api_account_priority: int = Field(default=1, ge=0, le=1000)
@@ -1175,7 +1175,7 @@ def merged_defaults() -> dict[str, Any]:
     base["sub2api_upload_retries"] = _as_nonneg_int(base.get("sub2api_upload_retries"), 3, maximum=10)
     if base["sub2api_upload_retries"] < 1:
         base["sub2api_upload_retries"] = 1
-    base["sub2api_platform"] = str(base.get("sub2api_platform") or "openai").strip() or "openai"
+    base["sub2api_platform"] = str(base.get("sub2api_platform") or "grok").strip() or "grok"
     acct_type = str(base.get("sub2api_account_type") or "oauth").strip().lower() or "oauth"
     if acct_type not in {"oauth", "apikey", "upstream"}:
         acct_type = "oauth"
@@ -1269,7 +1269,7 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
         "sub2api_api_base": str(defaults.get("sub2api_api_base") or ""),
         "sub2api_upload_timeout": defaults.get("sub2api_upload_timeout", 30),
         "sub2api_upload_retries": defaults.get("sub2api_upload_retries", 3),
-        "sub2api_platform": str(defaults.get("sub2api_platform") or "openai"),
+        "sub2api_platform": str(defaults.get("sub2api_platform") or "grok"),
         "sub2api_account_type": str(defaults.get("sub2api_account_type") or "oauth"),
         "sub2api_account_concurrency": defaults.get("sub2api_account_concurrency", 10),
         "sub2api_account_priority": defaults.get("sub2api_account_priority", 1),
@@ -1420,6 +1420,15 @@ def sync_account_records_for_task(row: sqlite3.Row) -> None:
                         ),
                     )
 
+            # 注册 OAuth/测活日志并入账号 cpa_log（与账号管理「查看日志」同一份，去重）
+            acc_row = fetch_one(
+                "SELECT id FROM accounts WHERE task_id = ? AND email = ? AND sso = ?",
+                (int(row["id"]), email, sso),
+            )
+            if acc_row is not None:
+                merge_register_cpa_logs(int(acc_row["id"]), cpa_record)
+
+
 
 
 
@@ -1513,6 +1522,44 @@ def append_account_cpa_log(account_id: int, message: str) -> None:
             ("\n".join(kept), now_iso(), account_id),
         )
         conn.commit()
+
+
+def append_account_cpa_log_unique(account_id: int, message: str) -> None:
+    """Append log line only if the same text is not already present (avoid sync spam)."""
+    line = str(message or "").strip()
+    if not line:
+        return
+    with db_lock, get_conn() as conn:
+        row = conn.execute("SELECT cpa_log FROM accounts WHERE id = ?", (account_id,)).fetchone()
+        existing = str(row_get(row, "cpa_log", "") or "")
+    # strip timestamps for de-dupe: compare raw message tails
+    for existing_line in existing.splitlines():
+        raw = existing_line.strip()
+        if raw.endswith(line) or line in raw:
+            return
+    append_account_cpa_log(account_id, line)
+
+
+def merge_register_cpa_logs(account_id: int, cpa_record: dict[str, Any]) -> None:
+    """Import register-time OAuth/probe logs into the same accounts.cpa_log used by maintain ops."""
+    if not isinstance(cpa_record, dict):
+        return
+    lines: list[str] = []
+    raw_lines = cpa_record.get("log_lines")
+    if isinstance(raw_lines, list):
+        lines.extend(str(x).strip() for x in raw_lines if str(x).strip())
+    # summary line always useful even when log_lines empty
+    summary = (
+        f"[register-cpa] ok={bool(cpa_record.get('ok'))} "
+        f"mode={cpa_record.get('mode') or '-'} "
+        f"token={cpa_record.get('token_status') or '-'} "
+        f"path={cpa_record.get('path') or '-'} "
+        f"err={cpa_record.get('error') or cpa_record.get('reason') or '-'}"
+    )
+    lines.append(summary)
+    for line in lines:
+        append_account_cpa_log_unique(account_id, line)
+
 
 
 def normalize_console_cpa_paths(config: dict[str, Any]) -> dict[str, Any]:
@@ -2266,6 +2313,17 @@ def cpa_worker_loop() -> None:
                     row3 = fetch_one("SELECT cpa_status, cpa_error FROM accounts WHERE id = ?", (account_id,))
                     status = str(row_get(row3, "cpa_status", "generated") or "generated") if row3 else "generated"
                     err = str(row_get(row3, "cpa_error", "") or "") if row3 else ""
+                    if status in {"queued", "running", "uploading"}:
+                        status = "generated" if mode in {"probe_only", "refresh_only", "oauth_only"} else status
+                        if status in {"queued", "running", "uploading"}:
+                            status = "generated"
+                        try:
+                            execute_no_return(
+                                "UPDATE accounts SET cpa_status = ?, cpa_updated_at = ? WHERE id = ?",
+                                (status, now_iso(), account_id),
+                            )
+                        except Exception:
+                            pass
                     # Defensive: generated+error should not be counted as queue success
                     if status == "generated" and err:
                         _record_cpa_result(account_id, email, status, err)
@@ -2277,7 +2335,17 @@ def cpa_worker_loop() -> None:
                     row3 = fetch_one("SELECT cpa_status, cpa_error FROM accounts WHERE id = ?", (account_id,))
                     status = str(row_get(row3, "cpa_status", "failed") or "failed") if row3 else "failed"
                     err = str(row_get(row3, "cpa_error", "") or error or "") if row3 else (error or "")
-                    if status not in {"invalid", "failed", "generated", "not_started"}:
+                    # Never leave accounts stuck in busy states after a finished job
+                    if status in {"queued", "running", "uploading"}:
+                        status = "invalid" if mode in {"probe_only", "refresh_only", "oauth_only"} else "failed"
+                        try:
+                            execute_no_return(
+                                "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
+                                (status, (err or "queue job finished with busy status")[:500], now_iso(), account_id),
+                            )
+                        except Exception:
+                            pass
+                    if status not in {"invalid", "failed", "generated", "not_started", "uploaded", "cancelled"}:
                         status = "failed"
                     _record_cpa_result(account_id, email, status, err)
                     cpa_queue_state["failed"] = int(cpa_queue_state.get("failed") or 0) + 1
@@ -2494,27 +2562,26 @@ def run_account_token_probe(
     renew_source = refresh.get("source") if refresh.get("renewed") else None
     err_text = str(result.get("error") or health.get("message") or "")[:500]
     # Map liveness into account CPA status so UI "CPA" column reflects probe outcome.
-    # alive  -> keep generated/uploaded if already authorized; else mark generated when file exists
-    # dead   -> invalid（测活失败，标记账号无效）
+    # CRITICAL: batch maintain may set cpa_status=queued; must always leave busy states
+    # (queued/running/uploading), otherwise action buttons stay disabled forever.
+    busy_cpa = {"queued", "running", "uploading"}
     cpa_status_update: str | None = None
     row_now = fetch_one("SELECT cpa_status, cpa_path FROM accounts WHERE id = ?", (account_id,))
     prev_cpa = str(row_get(row_now, "cpa_status", "not_started") or "not_started")
     path_now = str(auth_path or row_get(row_now, "cpa_path", "") or "").strip()
 
     if result.get("alive"):
-        if prev_cpa in {"not_started", "failed", "invalid", "queued", "running"} and path_now:
+        if prev_cpa in busy_cpa:
+            # finished queue job: restore a non-busy status
+            cpa_status_update = "generated" if path_now else "not_started"
+        elif prev_cpa in {"not_started", "failed", "invalid"} and path_now:
             cpa_status_update = "generated"
         elif prev_cpa == "invalid" and path_now:
-            # recovered by probe
             cpa_status_update = "generated"
         # uploaded/generated stay as-is on success
     else:
-        # probe failed: mark account invalid so it is visible and skippable
-        if prev_cpa not in {"queued", "running"}:
-            cpa_status_update = "invalid"
-        # also clear "uploaded" illusion when API is dead
-        if prev_cpa in {"uploaded", "generated", "failed", "not_started", "invalid"}:
-            cpa_status_update = "invalid"
+        # probe failed: always leave busy states and mark invalid
+        cpa_status_update = "invalid"
 
     _update_account_token_fields(
         account_id,
@@ -2581,7 +2648,12 @@ def run_account_token_refresh(
     if auth_path is None and not (allow_sso_fallback and sso):
         msg = "缺少 auth 文件且无 SSO，无法续期"
         account_log(msg)
-        _update_account_token_fields(account_id, token_status="error", token_error=msg)
+        _update_account_token_fields(
+            account_id,
+            token_status="error",
+            token_error=msg,
+            cpa_status="invalid",
+        )
         return {"ok": False, "account_id": account_id, "error": msg}
 
     account_log(f"开始 Token 续期 force={force} sso_fallback={allow_sso_fallback}")
@@ -2635,6 +2707,7 @@ def run_account_token_refresh(
             account_id,
             token_status="refresh_failed",
             token_error=str(exc)[:500],
+            cpa_status="invalid",
         )
         return {"ok": False, "account_id": account_id, "error": str(exc)}
 
@@ -2645,6 +2718,13 @@ def run_account_token_refresh(
         if result.get("skipped"):
             status = "alive"
         source = str(result.get("source") or "")
+        # leave queue busy states even when refresh skipped (token still valid)
+        row_now = fetch_one("SELECT cpa_status FROM accounts WHERE id = ?", (account_id,))
+        prev_cpa = str(row_get(row_now, "cpa_status", "not_started") or "not_started")
+        if result.get("renewed") or prev_cpa in {"queued", "running", "uploading", "failed", "invalid", "not_started"}:
+            refresh_cpa_status = "generated"
+        else:
+            refresh_cpa_status = None
         _update_account_token_fields(
             account_id,
             token_status=status if result.get("ok") else "refresh_failed",
@@ -2653,7 +2733,7 @@ def run_account_token_refresh(
             last_renew_source=source or None,
             last_renew_at=now_iso() if result.get("renewed") else None,
             cpa_path=path_value,
-            cpa_status="generated" if result.get("renewed") else None,
+            cpa_status=refresh_cpa_status,
         )
         account_log(
             f"续期完成 ok={result.get('ok')} renewed={result.get('renewed')} "
@@ -2677,6 +2757,7 @@ def run_account_token_refresh(
         token_expires_at=expires_at,
         token_error=str(result.get("error") or "refresh_failed")[:500],
         cpa_path=path_value if "path_value" in locals() else None,
+        cpa_status="invalid",
     )
     account_log(f"续期失败: {result.get('error')}")
     return {
@@ -3609,6 +3690,60 @@ def restore_email_domain(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+
+def _heal_stale_busy_accounts() -> int:
+    """Clear cpa_status queued/running/uploading when account is no longer in global queue.
+
+    Prevents UI action buttons from staying disabled after probe/refresh finished
+    without writing a terminal cpa_status (historical bug).
+    """
+    try:
+        with cpa_jobs_lock:
+            active_ids = set(cpa_jobs.keys())
+            current_id = cpa_queue_state.get("current_id")
+            if current_id is not None:
+                active_ids.add(int(current_id))
+        rows = fetch_all(
+            "SELECT id, cpa_status, cpa_path, token_status FROM accounts "
+            "WHERE cpa_status IN ('queued', 'running', 'uploading')"
+        )
+        healed = 0
+        for row in rows or []:
+            account_id = int(row["id"])
+            if account_id in active_ids:
+                continue
+            path = str(row_get(row, "cpa_path", "") or "").strip()
+            token_status = str(row_get(row, "token_status", "") or "").strip().lower()
+            if token_status in {
+                "dead", "sso_dead", "api_dead", "error",
+                "refresh_failed", "refresh_invalid", "oauth_failed",
+            }:
+                new_status = "invalid"
+            elif path:
+                new_status = "generated"
+            else:
+                new_status = "not_started"
+            execute_no_return(
+                "UPDATE accounts SET cpa_status = ?, cpa_error = CASE "
+                "WHEN ? = 'invalid' AND (cpa_error IS NULL OR cpa_error = '') "
+                "THEN ? ELSE cpa_error END, cpa_updated_at = ? WHERE id = ?",
+                (
+                    new_status,
+                    new_status,
+                    f"auto-heal: stale {row_get(row, 'cpa_status', '')} cleared (token={token_status or 'unknown'})",
+                    now_iso(),
+                    account_id,
+                ),
+            )
+            healed += 1
+        if healed:
+            print(f"[accounts] healed {healed} stale busy cpa_status rows", flush=True)
+        return healed
+    except Exception as exc:  # noqa: BLE001
+        print(f"[accounts] heal stale busy failed: {exc}", flush=True)
+        return 0
+
+
 @app.get("/api/accounts")
 def list_accounts(
     task_id: int | None = Query(None, ge=1),
@@ -3620,6 +3755,7 @@ def list_accounts(
     page_size: int = Query(20, ge=1, le=200),
 ) -> dict[str, Any]:
     sync_all_account_records()
+    _heal_stale_busy_accounts()
     where_clause, where_params = build_accounts_where_clause(
         task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive
     )

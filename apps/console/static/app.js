@@ -60,6 +60,7 @@
   const accountsCpaExportBtnEl = document.getElementById("accountsCpaExportBtn");
   const accountsSelectFilteredBtnEl = document.getElementById("accountsSelectFilteredBtn");
   const accountsClearFilteredBtnEl = document.getElementById("accountsClearFilteredBtn");
+  const accountsLogBtnEl = document.getElementById("accountsLogBtn");
   const accountsCpaQueuePanelEl = document.getElementById("accountsCpaQueuePanel");
   const accountsCpaQueueTitleEl = document.getElementById("accountsCpaQueueTitle");
   const accountsCpaQueueMetaEl = document.getElementById("accountsCpaQueueMeta");
@@ -215,7 +216,7 @@
       settingsFormEl.elements.sub2api_upload_retries.value = defaults.sub2api_upload_retries || 3;
     }
     if (settingsFormEl.elements.sub2api_platform) {
-      settingsFormEl.elements.sub2api_platform.value = defaults.sub2api_platform || "openai";
+      settingsFormEl.elements.sub2api_platform.value = defaults.sub2api_platform || "grok";
     }
     if (settingsFormEl.elements.sub2api_account_type) {
       settingsFormEl.elements.sub2api_account_type.value = defaults.sub2api_account_type || "oauth";
@@ -262,7 +263,6 @@
     const handled = Math.min(target, completed + failed);
     return Math.max(0, Math.min(100, Math.round((handled / target) * 100)));
   }
-
 
   async function fetchAllTasksForUi() {
     // 后端 page_size 上限 200，用分页拉全量（筛选下拉用）
@@ -541,6 +541,7 @@
   }
 
   
+
   
 
   function appendAccountFilterParams(params) {
@@ -645,7 +646,6 @@
     return `<span class="status-pill ${c}"${tip}>${t}</span>`;
   }
 
-
 function isCpaBusy(account) {
     return ["running", "uploading", "queued"].includes(account.cpa_status);
   }
@@ -666,6 +666,7 @@ function isCpaBusy(account) {
     if (metricAccountSelectedEl) metricAccountSelectedEl.textContent = String(state.selectedAccountIds.size);
     accountsDownloadBtnEl.disabled = state.selectedAccountIds.size === 0;
     accountsDeleteBtnEl.disabled = state.selectedAccountIds.size === 0;
+    if (accountsLogBtnEl) accountsLogBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsClearFilteredBtnEl) accountsClearFilteredBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsProbeBatchBtnEl) accountsProbeBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsRefreshTokenBatchBtnEl) accountsRefreshTokenBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
@@ -713,7 +714,6 @@ function isCpaBusy(account) {
           <button class="button button-small button-info" type="button" data-oauth-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>OAuth</button>
           <button class="button button-small button-warn" type="button" data-refresh-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>续期</button>
           <button class="button button-small button-success" type="button" data-probe-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>测活</button>
-          <button class="button button-small button-neutral" type="button" data-cpa-log-account-id="${account.id}">日志</button>
           <button class="button button-danger button-small" type="button" data-delete-account-id="${account.id}">删除</button>
         </td>
       </tr>
@@ -730,7 +730,6 @@ function isCpaBusy(account) {
         renderAccounts();
       });
     });
-
 
     accountsTableBodyEl.querySelectorAll("[data-copy]").forEach((cell) => {
       cell.addEventListener("click", async () => {
@@ -773,6 +772,7 @@ function isCpaBusy(account) {
     });
 
     
+
     accountsTableBodyEl.querySelectorAll("[data-probe-account-id]").forEach((button) => {
       button.addEventListener("click", async () => {
         const account = state.accounts.find((item) => item.id === Number(button.dataset.probeAccountId));
@@ -910,13 +910,41 @@ function isCpaBusy(account) {
         }
       });
     });
+  }
 
-    accountsTableBodyEl.querySelectorAll("[data-cpa-log-account-id]").forEach((button) => {
-      button.addEventListener("click", () => {
-        state.cpaLogAccountId = Number(button.dataset.cpaLogAccountId);
-        renderAccountCpaLog(true);
-      });
-    });
+  function fillAccountCpaLogPanel(account, scrollToBottom = false) {
+    if (!accountCpaLogPanelEl || !accountCpaLogEl || !accountCpaLogTitleEl || !account) {
+      return;
+    }
+    accountCpaLogPanelEl.classList.remove("hidden");
+    accountCpaLogTitleEl.textContent = `账号日志 · ${account.email || `#${account.id}`}`;
+    const lines = [];
+    lines.push(`邮箱: ${account.email || "-"}`);
+    lines.push(`CPA: ${cpaStatusLabel(account.cpa_status)}`);
+    lines.push(`Token: ${tokenStatusLabel(account.token_status)}`);
+    lines.push(`SSO测活: ${ssoAliveLabel(account.sso_alive)}`);
+    if (account.cpa_path) lines.push(`文件: ${account.cpa_path}`);
+    if (account.token_expires_at) lines.push(`过期: ${account.token_expires_at}`);
+    if (account.token_checked_at) lines.push(`检测时间: ${account.token_checked_at}`);
+    if (account.last_renew_source) lines.push(`续期来源: ${account.last_renew_source}`);
+    if (account.cpa_uploaded_at) lines.push(`推送时间: ${account.cpa_uploaded_at}`);
+    if (account.token_error) lines.push(`Token错误: ${account.token_error}`);
+    if (account.cpa_error) lines.push(`CPA错误: ${account.cpa_error}`);
+    if (account.cpa_log) {
+      lines.push("");
+      lines.push("---- 详细日志（注册后 OAuth/测活 + 账号维护，同一份）----");
+      lines.push(account.cpa_log);
+    } else {
+      lines.push("");
+      lines.push("---- 详细日志 ----");
+      lines.push("暂无详细日志。");
+      lines.push("对本账号执行 OAuth / 测活 / 续期 / 推送后，过程会写到这里。");
+      lines.push("注册浏览器步骤仍在「注册任务」控制台；注册后的 OAuth/测活会同步到本日志。");
+    }
+    accountCpaLogEl.textContent = lines.join("\n") || "暂无日志";
+    if (scrollToBottom || isCpaBusy(account)) {
+      accountCpaLogEl.scrollTop = accountCpaLogEl.scrollHeight;
+    }
   }
 
   function renderAccountCpaLog(scrollToBottom = false) {
@@ -929,23 +957,48 @@ function isCpaBusy(account) {
     }
     const account = state.accounts.find((item) => item.id === state.cpaLogAccountId);
     if (!account) {
-      accountCpaLogPanelEl.classList.add("hidden");
+      if (!accountCpaLogPanelEl.dataset.stickyLog) {
+        accountCpaLogPanelEl.classList.add("hidden");
+      }
       return;
     }
-    accountCpaLogPanelEl.classList.remove("hidden");
-    accountCpaLogTitleEl.textContent = `CPA 日志 · ${account.email || `#${account.id}`}`;
-    const lines = [];
-    lines.push(`状态: ${cpaStatusLabel(account.cpa_status)}`);
-    if (account.cpa_path) lines.push(`文件: ${account.cpa_path}`);
-    if (account.cpa_uploaded_at) lines.push(`推送时间: ${account.cpa_uploaded_at}`);
-    if (account.cpa_error) lines.push(`错误: ${account.cpa_error}`);
-    if (account.cpa_log) {
-      lines.push("");
-      lines.push(account.cpa_log);
+    accountCpaLogPanelEl.dataset.stickyLog = "";
+    fillAccountCpaLogPanel(account, scrollToBottom);
+  }
+
+  async function openSelectedAccountLog() {
+    const ids = Array.from(state.selectedAccountIds);
+    if (!ids.length) {
+      accountsMetaEl.textContent = "请先勾选要查看日志的账号";
+      return;
     }
-    accountCpaLogEl.textContent = lines.join("\n") || "暂无日志";
-    if (scrollToBottom || isCpaBusy(account)) {
-      accountCpaLogEl.scrollTop = accountCpaLogEl.scrollHeight;
+    const accountId = ids[0];
+    if (ids.length > 1) {
+      accountsMetaEl.textContent = `已选 ${ids.length} 个，仅展示第一个账号的日志 (#${accountId})`;
+    }
+    state.cpaLogAccountId = accountId;
+    let account = state.accounts.find((item) => item.id === accountId);
+    if (!account) {
+      try {
+        const data = await fetchJson("/api/accounts/by-ids", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ account_ids: [accountId] }),
+        });
+        account = (data.accounts || [])[0];
+      } catch (error) {
+        accountsMetaEl.textContent = `加载日志失败: ${error.message}`;
+        return;
+      }
+    }
+    if (!account) {
+      accountsMetaEl.textContent = "未找到选中账号";
+      return;
+    }
+    if (accountCpaLogPanelEl) accountCpaLogPanelEl.dataset.stickyLog = "1";
+    fillAccountCpaLogPanel(account, true);
+    if (accountCpaLogPanelEl && accountCpaLogPanelEl.scrollIntoView) {
+      accountCpaLogPanelEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
   }
 
@@ -1246,10 +1299,15 @@ function isCpaBusy(account) {
   if (accountCpaLogCloseBtnEl) {
     accountCpaLogCloseBtnEl.addEventListener("click", () => {
       state.cpaLogAccountId = null;
+      if (accountCpaLogPanelEl) accountCpaLogPanelEl.dataset.stickyLog = "";
       renderAccountCpaLog();
     });
   }
-
+  if (accountsLogBtnEl) {
+    accountsLogBtnEl.addEventListener("click", () => {
+      openSelectedAccountLog();
+    });
+  }
 
   function renderCpaQueuePanel() {
     if (!accountsCpaQueuePanelEl) return;
@@ -1289,6 +1347,7 @@ function isCpaBusy(account) {
   }
 
   
+
   async function startBatchMaintain(mode) {
     const ids = Array.from(state.selectedAccountIds);
     if (!ids.length) {
@@ -1668,7 +1727,7 @@ accountsDownloadBtnEl.addEventListener("click", async () => {
       sub2api_api_base: String(settingsFormEl.elements.sub2api_api_base?.value || "").trim(),
       sub2api_upload_timeout: Number(settingsFormEl.elements.sub2api_upload_timeout?.value) || 30,
       sub2api_upload_retries: Number(settingsFormEl.elements.sub2api_upload_retries?.value) || 3,
-      sub2api_platform: String(settingsFormEl.elements.sub2api_platform?.value || "openai").trim() || "openai",
+      sub2api_platform: String(settingsFormEl.elements.sub2api_platform?.value || "grok").trim() || "grok",
       sub2api_account_type: String(settingsFormEl.elements.sub2api_account_type?.value || "oauth").trim() || "oauth",
       sub2api_account_concurrency: Number(settingsFormEl.elements.sub2api_account_concurrency?.value ?? 10) || 10,
       sub2api_account_priority: Number(settingsFormEl.elements.sub2api_account_priority?.value ?? 1),
@@ -1717,7 +1776,6 @@ accountsDownloadBtnEl.addEventListener("click", async () => {
     toggleMailBtnEl.textContent = detailMetaEl.classList.contains("hidden") ? "展开临时邮箱参数" : "收起临时邮箱参数";
   });
 
-
   async function initAuthUi() {
     try {
       const data = await fetchJson("/api/auth/status");
@@ -1757,3 +1815,4 @@ accountsDownloadBtnEl.addEventListener("click", async () => {
   window.setInterval(refreshCpaQueue, 2000);
   window.setInterval(updateMetrics, 3000);
 })();
+

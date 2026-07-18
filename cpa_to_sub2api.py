@@ -1,17 +1,16 @@
 # -*- coding: utf-8 -*-
 """Convert CPA xAI auth JSON and push/export to Sub2API.
 
-Mirrors open-cpa utils/integrations/sub2api_client.py push flow:
+Push API (open-cpa style):
   1) POST /api/v1/admin/accounts  (create oauth/apikey)
   2) fallback POST /api/v1/admin/accounts/data  (import bundle)
 Auth header: x-api-key
 
-Grok/xAI notes:
-  - Official Sub2API platforms are openai/anthropic/gemini/antigravity.
-  - Default maps CPA xAI OAuth into platform=openai type=oauth with base_url
-    from the CPA file (cli-chat-proxy). Auto-refresh may only work if the
-    Sub2API deployment understands those credentials; use type=apikey for
-    openai-compatible proxy usage (token lifetime limited).
+Account payload format aligned with grok-register-roxy/cpa_to_sub2.py:
+  - platform=grok (xAI OAuth)
+  - credentials: access_token / token_type / base_url / expires_at(RFC3339) /
+    refresh_token / id_token / client_id / scope / email
+  - top-level expires_at as unix seconds
 """
 
 from __future__ import annotations
@@ -109,7 +108,7 @@ def get_sub2api_push_settings(config: dict[str, Any] | None = None) -> dict[str,
         "priority": _as_int(cfg.get("sub2api_account_priority", 1), 1, 0, 1000),
         "rate_multiplier": _as_float(cfg.get("sub2api_account_rate_multiplier", 1.0), 1.0, 0.0),
         "group_ids": _parse_group_ids(cfg.get("sub2api_account_group_ids")),
-        "platform": str(cfg.get("sub2api_platform") or "openai").strip() or "openai",
+        "platform": str(cfg.get("sub2api_platform") or "grok").strip() or "grok",
         "account_type": str(cfg.get("sub2api_account_type") or "oauth").strip().lower() or "oauth",
         "enable_ws": bool(cfg.get("sub2api_enable_ws_mode", False)),
         "default_proxy": str(cfg.get("sub2api_default_proxy") or "").strip(),
@@ -160,6 +159,68 @@ def _load_cpa_auth(path_value: str | Path | dict[str, Any] | None) -> tuple[dict
     return data, path, ""
 
 
+
+DEFAULT_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
+DEFAULT_BASE_URL = "https://cli-chat-proxy.grok.com/v1"
+DEFAULT_SCOPE = "openid profile email offline_access grok-cli:access api:access"
+PLATFORM_MAP = {
+    "xai": "grok",
+    "grok": "grok",
+    "openai": "openai",
+    "chatgpt": "openai",
+    "codex": "openai",
+}
+
+
+def _b64url_json(segment: str) -> Any | None:
+    import base64
+
+    s = segment + "=" * (-len(segment) % 4)
+    try:
+        return json.loads(base64.urlsafe_b64decode(s.encode("ascii")))
+    except Exception:
+        return None
+
+
+def _parse_jwt_claims(token: str) -> dict[str, Any]:
+    if not token or token.count(".") < 2:
+        return {}
+    claims = _b64url_json(token.split(".")[1])
+    return claims if isinstance(claims, dict) else {}
+
+
+def _to_rfc3339(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(int(value), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        ss = s.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(ss)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        pass
+    try:
+        return datetime.fromtimestamp(int(float(s)), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        return None
+
+
+def _rfc3339_to_unix(value: str | None) -> int | None:
+    if not value:
+        return None
+    try:
+        ss = str(value).replace("Z", "+00:00")
+        return int(datetime.fromisoformat(ss).timestamp())
+    except Exception:
+        return None
+
+
 def _expires_at_unix(auth: dict[str, Any]) -> int:
     access = str(auth.get("access_token") or "").strip()
     if access.count(".") >= 2:
@@ -190,65 +251,138 @@ def build_sub2api_account_from_cpa(
     settings: dict[str, Any] | None = None,
     *,
     proxy_obj: dict[str, Any] | None = None,
+    file_name: str = "",
 ) -> dict[str, Any]:
-    """Build one Sub2API account item from a CPA xAI auth dict."""
+    """Build one Sub2API account item from a CPA xAI auth dict.
+
+    Format aligned with grok-register-roxy/cpa_to_sub2.py (platform=grok OAuth).
+    """
     push = settings or get_sub2api_push_settings()
-    email = str(auth.get("email") or "").strip() or "unknown"
+    email = str(auth.get("email") or "").strip()
     access_token = str(auth.get("access_token") or "").strip()
+    if not access_token and isinstance(auth.get("credentials"), dict):
+        access_token = str(auth["credentials"].get("access_token") or "").strip()
     refresh_token = str(auth.get("refresh_token") or "").strip()
-    base_url = str(auth.get("base_url") or "https://cli-chat-proxy.grok.com/v1").strip().rstrip("/")
-    token_endpoint = str(auth.get("token_endpoint") or "").strip()
+    if not refresh_token and isinstance(auth.get("credentials"), dict):
+        refresh_token = str(auth["credentials"].get("refresh_token") or "").strip()
+    id_token = str(auth.get("id_token") or "").strip()
+    if not id_token and isinstance(auth.get("credentials"), dict):
+        id_token = str(auth["credentials"].get("id_token") or "").strip()
+
+    claims = _parse_jwt_claims(access_token)
+    id_claims = _parse_jwt_claims(id_token)
+    if not email:
+        for src in (auth, id_claims, claims):
+            v = str((src or {}).get("email") or "").strip()
+            if v and "@" in v:
+                email = v
+                break
+    if not email:
+        email = "unknown"
+
+    # platform: config default grok; map xai/grok; allow override
+    raw_platform = str(push.get("platform") or "grok").strip().lower() or "grok"
+    provider = str(auth.get("type") or auth.get("provider") or auth.get("platform") or "xai").strip().lower()
+    if raw_platform in PLATFORM_MAP:
+        platform = PLATFORM_MAP[raw_platform]
+    elif provider in PLATFORM_MAP:
+        platform = PLATFORM_MAP[provider]
+    else:
+        platform = raw_platform
+
     account_type = str(push.get("account_type") or "oauth").lower()
     if account_type not in {"oauth", "apikey", "upstream"}:
         account_type = "oauth"
+    # CPA type is often provider name (xai), not oauth type
+    if account_type == "oauth" and str(auth.get("auth_kind") or "").strip().lower() in {"oauth", "apikey"}:
+        account_type = str(auth.get("auth_kind")).strip().lower()
 
-    expires_at = _expires_at_unix(auth)
-    expires_in = max(expires_at - int(time.time()), 0)
+    base_url = str(
+        auth.get("base_url")
+        or (auth.get("credentials") or {}).get("base_url")
+        or DEFAULT_BASE_URL
+    ).strip().rstrip("/") or DEFAULT_BASE_URL
 
-    model_mapping = push.get("model_mapping")
-    if not isinstance(model_mapping, dict) or not model_mapping:
-        model_mapping = {
-            "grok-4.5": "grok-4.5",
-            "grok-4": "grok-4",
-            "grok-3": "grok-3",
-        }
+    expires_rfc = _to_rfc3339(
+        auth.get("expires_at")
+        or auth.get("expired")
+        or auth.get("expiry")
+        or (auth.get("credentials") or {}).get("expires_at")
+        or (auth.get("credentials") or {}).get("expired")
+    )
+    if not expires_rfc:
+        expires_rfc = _to_rfc3339(claims.get("exp"))
+    if not expires_rfc:
+        # fallback from helper unix
+        expires_rfc = _to_rfc3339(_expires_at_unix(auth))
+
+    expires_unix = _rfc3339_to_unix(expires_rfc) or _expires_at_unix(auth)
 
     if account_type == "apikey":
         credentials: dict[str, Any] = {
             "api_key": access_token or refresh_token,
             "base_url": base_url,
-            "model_mapping": model_mapping,
         }
+        if email and email != "unknown":
+            credentials["email"] = email
     else:
+        # Grok OAuth credentials (roxy-compatible)
+        token_type = str(auth.get("token_type") or "Bearer").strip() or "Bearer"
+        client_id = str(
+            auth.get("client_id")
+            or claims.get("client_id")
+            or (auth.get("credentials") or {}).get("client_id")
+            or DEFAULT_CLIENT_ID
+        ).strip() or DEFAULT_CLIENT_ID
+        scope = str(
+            auth.get("scope")
+            or claims.get("scope")
+            or (auth.get("credentials") or {}).get("scope")
+            or DEFAULT_SCOPE
+        ).strip() or DEFAULT_SCOPE
+
         credentials = {
             "access_token": access_token,
-            "refresh_token": refresh_token,
-            "expires_at": expires_at,
-            "expires_in": expires_in,
+            "token_type": token_type,
             "base_url": base_url,
-            "model_mapping": model_mapping,
         }
-        if token_endpoint:
-            credentials["token_endpoint"] = token_endpoint
-        id_token = str(auth.get("id_token") or "").strip()
+        if expires_rfc:
+            credentials["expires_at"] = expires_rfc
+        if refresh_token:
+            credentials["refresh_token"] = refresh_token
         if id_token:
             credentials["id_token"] = id_token
-        sub = str(auth.get("sub") or "").strip()
-        if sub:
-            credentials["chatgpt_account_id"] = sub  # open-cpa field name reuse for import tools
-            credentials["sub"] = sub
-        # Keep original CPA type marker for operators inspecting Sub2API UI
-        credentials["source_type"] = str(auth.get("type") or "xai")
-        credentials["auth_kind"] = str(auth.get("auth_kind") or "oauth")
+        if client_id:
+            credentials["client_id"] = client_id
+        if scope:
+            credentials["scope"] = scope
+        if email and email != "unknown":
+            credentials["email"] = email
+        for k in ("subscription_tier", "entitlement_status"):
+            v = auth.get(k)
+            if v:
+                credentials[k] = v
 
-    extra: dict[str, Any] = {"load_factor": push["load_factor"], "source": "grok-register-cpa"}
-    if push.get("enable_ws"):
+    if not str(credentials.get("access_token") or credentials.get("api_key") or "").strip():
+        raise ValueError("missing access_token/api_key for sub2api account")
+
+    extra: dict[str, Any] = {}
+    if email and email != "unknown":
+        extra["email"] = email
+    # keep push-side load_factor for Sub2API create_account
+    if push.get("load_factor") is not None:
+        extra["load_factor"] = push["load_factor"]
+    extra["source"] = "grok-register-cpa"
+    for k in ("subscription_tier", "entitlement_status"):
+        if credentials.get(k) and k not in extra:
+            extra[k] = credentials[k]
+    if push.get("enable_ws") and platform == "openai":
         extra["openai_oauth_responses_websockets_v2_enabled"] = True
         extra["openai_oauth_responses_websockets_v2_mode"] = "passthrough"
 
     item: dict[str, Any] = {
-        "name": email[:64],
-        "platform": str(push.get("platform") or "openai"),
+        "name": (email if email != "unknown" else (Path(file_name).stem if file_name else "unknown"))[:128],
+        "platform": platform,
         "type": account_type if account_type != "upstream" else "upstream",
         "credentials": credentials,
         "extra": extra,
@@ -257,11 +391,14 @@ def build_sub2api_account_from_cpa(
         "rate_multiplier": push["rate_multiplier"],
         "auto_pause_on_expired": True,
     }
+    if expires_unix and expires_unix > 0:
+        item["expires_at"] = int(expires_unix)
     if push.get("group_ids"):
         item["group_ids"] = list(push["group_ids"])
     if proxy_obj and proxy_obj.get("proxy_key"):
         item["proxy_key"] = proxy_obj["proxy_key"]
     return item
+
 
 
 def build_sub2api_export_bundle(
@@ -432,7 +569,7 @@ def write_local_sub2api_export(
     out_dir.mkdir(parents=True, exist_ok=True)
     email = str(auth.get("email") or "unknown").strip() or "unknown"
     safe = re.sub(r"[^a-zA-Z0-9@._-]+", "-", email).strip("-") or "unknown"
-    path = out_dir / f"sub2api-{safe}.json"
+    path = out_dir / f"sub2api-account-xai-{safe}.json"
     bundle = build_sub2api_export_bundle([auth], push)
     path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     log(f"[sub2api] local export -> {path}")

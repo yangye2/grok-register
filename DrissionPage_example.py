@@ -38,11 +38,16 @@ def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
     import time
 
     config = load_cpa_config()
-    if not bool(config.get("cpa_export_enabled", False)):
-        return {"ok": False, "skipped": True, "reason": "disabled"}
+    log_lines: list[str] = []
 
     def log(message: str) -> None:
+        msg = str(message or "").strip()
+        if msg:
+            log_lines.append(msg)
         print(message, flush=True)
+
+    if not bool(config.get("cpa_export_enabled", False)):
+        return {"ok": False, "skipped": True, "reason": "disabled", "log_lines": list(log_lines)}
 
     sso_val = (sso_value or "").strip()
     email = (email or "").strip()
@@ -64,15 +69,15 @@ def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
         import cpa_export
     except Exception as exc:
         log(f"[cpa] import cpa_export failed: {exc}")
-        return {"ok": False, "error": f"import cpa_export: {exc}"}
+        return {"ok": False, "error": f"import cpa_export: {exc}", "log_lines": list(log_lines)}
 
     # ---- 1) 单独 OAuth（同 run_account_sso_oauth）----
     if not sso_val:
         log("[cpa-oauth] missing SSO cookie, skip OAuth (same as account OAuth)")
-        return {"ok": False, "email": email, "error": "missing sso", "mode": "sso_oauth"}
+        return {"ok": False, "email": email, "error": "missing sso", "mode": "sso_oauth", "log_lines": list(log_lines)}
     if not email:
         log("[cpa-oauth] missing email, skip OAuth")
-        return {"ok": False, "error": "missing email", "mode": "sso_oauth"}
+        return {"ok": False, "error": "missing email", "mode": "sso_oauth", "log_lines": list(log_lines)}
 
     log("[cpa-oauth] start SSO OAuth (same as account single OAuth)")
     # 单独 OAuth 不做内置 models probe；测活由下一步统一 check_account_liveness 完成
@@ -96,7 +101,7 @@ def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
             )
     except Exception as exc:
         log(f"[cpa-oauth] exception: {exc}")
-        return {"ok": False, "email": email, "error": str(exc), "mode": "sso_oauth"}
+        return {"ok": False, "email": email, "error": str(exc), "mode": "sso_oauth", "log_lines": list(log_lines)}
 
     if not oauth_result.get("ok") or not (oauth_result.get("path") or oauth_result.get("cpa_path")):
         err = oauth_result.get("error") or "sso_oauth_failed"
@@ -107,6 +112,7 @@ def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
             "error": err,
             "mode": oauth_result.get("mode") or "sso_oauth",
             "oauth": oauth_result,
+            "log_lines": list(log_lines),
         }
 
     result = dict(oauth_result)
@@ -224,6 +230,7 @@ def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
                 log(f"[sub2api] export failed: {exc}")
                 result["sub2api_error"] = str(exc)
 
+    result["log_lines"] = list(log_lines)
     return result
 
 
