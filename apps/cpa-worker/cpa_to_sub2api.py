@@ -6,7 +6,8 @@ Push API (open-cpa style):
   2) fallback POST /api/v1/admin/accounts/data  (import bundle)
 Auth header: x-api-key
 
-Account payload format aligned with grok-register-roxy/cpa_to_sub2.py:
+Account payload aligned with sub2api GrokOAuthService.BuildAccountCredentials
+and CreateAccountRequest (also compatible with roxy cpa_to_sub2.py):
   - platform=grok (xAI OAuth)
   - credentials: access_token / token_type / base_url / expires_at(RFC3339) /
     refresh_token / id_token / client_id / scope / email
@@ -103,7 +104,7 @@ def _api_base(config: dict[str, Any]) -> str:
 def get_sub2api_push_settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
     cfg = config or {}
     return {
-        "concurrency": _as_int(cfg.get("sub2api_account_concurrency", 10), 10, 1, 200),
+        "concurrency": _as_int(cfg.get("sub2api_account_concurrency", 1), 1, 1, 200),
         "load_factor": _as_int(cfg.get("sub2api_account_load_factor", 10), 10, 1, 10000),
         "priority": _as_int(cfg.get("sub2api_account_priority", 1), 1, 0, 1000),
         "rate_multiplier": _as_float(cfg.get("sub2api_account_rate_multiplier", 1.0), 1.0, 0.0),
@@ -253,9 +254,13 @@ def build_sub2api_account_from_cpa(
     proxy_obj: dict[str, Any] | None = None,
     file_name: str = "",
 ) -> dict[str, Any]:
-    """Build one Sub2API account item from a CPA xAI auth dict.
+    """Build one Sub2API account item from CPA xAI auth.
 
-    Format aligned with grok-register-roxy/cpa_to_sub2.py (platform=grok OAuth).
+    Aligns with sub2api source:
+      - service.GrokOAuthService.BuildAccountCredentials
+      - handler.CreateAccountRequest (platform/type/credentials/expires_at unix)
+      - README: platform=grok, oauth fields access_token/refresh_token/token_type/
+        expires_at(RFC3339)/base_url/email/client_id/scope + optional sub/team_id
     """
     push = settings or get_sub2api_push_settings()
     email = str(auth.get("email") or "").strip()
@@ -280,7 +285,6 @@ def build_sub2api_account_from_cpa(
     if not email:
         email = "unknown"
 
-    # platform: config default grok; map xai/grok; allow override
     raw_platform = str(push.get("platform") or "grok").strip().lower() or "grok"
     provider = str(auth.get("type") or auth.get("provider") or auth.get("platform") or "xai").strip().lower()
     if raw_platform in PLATFORM_MAP:
@@ -293,9 +297,9 @@ def build_sub2api_account_from_cpa(
     account_type = str(push.get("account_type") or "oauth").lower()
     if account_type not in {"oauth", "apikey", "upstream"}:
         account_type = "oauth"
-    # CPA type is often provider name (xai), not oauth type
-    if account_type == "oauth" and str(auth.get("auth_kind") or "").strip().lower() in {"oauth", "apikey"}:
-        account_type = str(auth.get("auth_kind")).strip().lower()
+    auth_kind = str(auth.get("auth_kind") or "").strip().lower()
+    if auth_kind in {"oauth", "apikey"}:
+        account_type = auth_kind
 
     base_url = str(
         auth.get("base_url")
@@ -303,22 +307,23 @@ def build_sub2api_account_from_cpa(
         or DEFAULT_BASE_URL
     ).strip().rstrip("/") or DEFAULT_BASE_URL
 
+    # credentials.expires_at MUST be RFC3339 string (BuildAccountCredentials)
     expires_rfc = _to_rfc3339(
         auth.get("expires_at")
         or auth.get("expired")
         or auth.get("expiry")
         or (auth.get("credentials") or {}).get("expires_at")
         or (auth.get("credentials") or {}).get("expired")
+        or claims.get("exp")
     )
     if not expires_rfc:
-        expires_rfc = _to_rfc3339(claims.get("exp"))
-    if not expires_rfc:
-        # fallback from helper unix
         expires_rfc = _to_rfc3339(_expires_at_unix(auth))
-
     expires_unix = _rfc3339_to_unix(expires_rfc) or _expires_at_unix(auth)
 
     if account_type == "apikey":
+        # xAI API key path: api.x.ai style
+        if "cli-chat-proxy" in base_url:
+            base_url = "https://api.x.ai/v1"
         credentials: dict[str, Any] = {
             "api_key": access_token or refresh_token,
             "base_url": base_url,
@@ -326,7 +331,7 @@ def build_sub2api_account_from_cpa(
         if email and email != "unknown":
             credentials["email"] = email
     else:
-        # Grok OAuth credentials (roxy-compatible)
+        # Mirror GrokOAuthService.BuildAccountCredentials
         token_type = str(auth.get("token_type") or "Bearer").strip() or "Bearer"
         client_id = str(
             auth.get("client_id")
@@ -343,56 +348,78 @@ def build_sub2api_account_from_cpa(
 
         credentials = {
             "access_token": access_token,
+            "expires_at": expires_rfc,  # RFC3339 string
             "token_type": token_type,
             "base_url": base_url,
+            "client_id": client_id,
+            "scope": scope,
         }
-        if expires_rfc:
-            credentials["expires_at"] = expires_rfc
         if refresh_token:
             credentials["refresh_token"] = refresh_token
         if id_token:
             credentials["id_token"] = id_token
-        if client_id:
-            credentials["client_id"] = client_id
-        if scope:
-            credentials["scope"] = scope
         if email and email != "unknown":
             credentials["email"] = email
+
+        # optional identity fields from JWT (same as BuildAccountCredentials)
+        subject = str(
+            auth.get("sub")
+            or claims.get("sub")
+            or id_claims.get("sub")
+            or ""
+        ).strip()
+        if subject:
+            credentials["sub"] = subject
+        team_id = str(
+            auth.get("team_id")
+            or claims.get("team_id")
+            or id_claims.get("team_id")
+            or ""
+        ).strip()
+        if team_id:
+            credentials["team_id"] = team_id
         for k in ("subscription_tier", "entitlement_status"):
-            v = auth.get(k)
+            v = auth.get(k) or claims.get(k)
             if v:
                 credentials[k] = v
 
     if not str(credentials.get("access_token") or credentials.get("api_key") or "").strip():
         raise ValueError("missing access_token/api_key for sub2api account")
 
+    # extra: keep email; load_factor is top-level on CreateAccountRequest
     extra: dict[str, Any] = {}
     if email and email != "unknown":
         extra["email"] = email
-    # keep push-side load_factor for Sub2API create_account
-    if push.get("load_factor") is not None:
-        extra["load_factor"] = push["load_factor"]
-    extra["source"] = "grok-register-cpa"
     for k in ("subscription_tier", "entitlement_status"):
         if credentials.get(k) and k not in extra:
             extra[k] = credentials[k]
-    if push.get("enable_ws") and platform == "openai":
-        extra["openai_oauth_responses_websockets_v2_enabled"] = True
-        extra["openai_oauth_responses_websockets_v2_mode"] = "passthrough"
+
+    concurrency = int(push.get("concurrency") or 1)
+    if platform == "grok" and account_type == "oauth" and concurrency <= 0:
+        concurrency = 1
 
     item: dict[str, Any] = {
-        "name": (email if email != "unknown" else (Path(file_name).stem if file_name else "unknown"))[:128],
+        "name": (email if email != "unknown" else (Path(file_name).stem if file_name else "unknown"))[:100],
         "platform": platform,
         "type": account_type if account_type != "upstream" else "upstream",
         "credentials": credentials,
         "extra": extra,
-        "concurrency": push["concurrency"],
-        "priority": push["priority"],
-        "rate_multiplier": push["rate_multiplier"],
+        "concurrency": concurrency,
+        "priority": int(push.get("priority") or 1),
+        "rate_multiplier": float(push.get("rate_multiplier") if push.get("rate_multiplier") is not None else 1.0),
         "auto_pause_on_expired": True,
     }
-    if expires_unix and expires_unix > 0:
+    # CreateAccountRequest.ExpiresAt / DataAccount.ExpiresAt = unix seconds
+    if expires_unix and int(expires_unix) > 0:
         item["expires_at"] = int(expires_unix)
+    load_factor = push.get("load_factor")
+    if load_factor is not None:
+        try:
+            lf = int(load_factor)
+            if lf > 0:
+                item["load_factor"] = lf
+        except (TypeError, ValueError):
+            pass
     if push.get("group_ids"):
         item["group_ids"] = list(push["group_ids"])
     if proxy_obj and proxy_obj.get("proxy_key"):
@@ -481,24 +508,46 @@ class Sub2APIClient:
             return False, f"Connection failed: {exc}"
 
     def create_account(self, account_item: dict[str, Any]) -> tuple[bool, str]:
+        """POST /api/v1/admin/accounts — fields match CreateAccountRequest in sub2api."""
         url = f"{self.api_url}/api/v1/admin/accounts"
-        # create API expects proxy_id rather than proxy_key; keep keys that CreateAccountRequest accepts
-        payload = {
+        # proxy_key is for data-import only; create API uses proxy_id (optional)
+        payload: dict[str, Any] = {
             "name": account_item.get("name"),
             "platform": account_item.get("platform"),
             "type": account_item.get("type"),
             "credentials": account_item.get("credentials") or {},
             "extra": account_item.get("extra") or {},
-            "concurrency": account_item.get("concurrency", 10),
-            "priority": account_item.get("priority", 1),
-            "rate_multiplier": account_item.get("rate_multiplier", 1.0),
-            "auto_pause_on_expired": account_item.get("auto_pause_on_expired", True),
+            "concurrency": int(account_item.get("concurrency") or 1),
+            "priority": int(account_item.get("priority") if account_item.get("priority") is not None else 1),
+            "rate_multiplier": float(
+                account_item.get("rate_multiplier") if account_item.get("rate_multiplier") is not None else 1.0
+            ),
+            "auto_pause_on_expired": bool(account_item.get("auto_pause_on_expired", True)),
         }
+        # top-level expires_at: unix seconds (CreateAccountRequest.ExpiresAt *int64)
+        exp = account_item.get("expires_at")
+        if exp is not None:
+            try:
+                exp_i = int(exp)
+                if exp_i > 0:
+                    payload["expires_at"] = exp_i
+            except (TypeError, ValueError):
+                pass
         if account_item.get("group_ids"):
             payload["group_ids"] = account_item["group_ids"]
-        # load_factor is accepted on some versions via top-level or extra
-        if "load_factor" in (account_item.get("extra") or {}):
-            payload["load_factor"] = account_item["extra"]["load_factor"]
+        # load_factor top-level (CreateAccountRequest.LoadFactor *int)
+        lf = account_item.get("load_factor")
+        if lf is None and isinstance(account_item.get("extra"), dict):
+            lf = account_item["extra"].get("load_factor")
+        if lf is not None:
+            try:
+                lf_i = int(lf)
+                if lf_i > 0:
+                    payload["load_factor"] = lf_i
+            except (TypeError, ValueError):
+                pass
+        if account_item.get("proxy_id") is not None:
+            payload["proxy_id"] = account_item["proxy_id"]
         try:
             response = requests.post(url, json=payload, headers=self.headers, timeout=self.timeout)
             ok, result = self._handle(response, success_codes=(200, 201))

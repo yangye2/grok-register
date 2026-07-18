@@ -13,3 +13,13 @@ node_modules/
 CLAUDE.md
 /apps/console/app.py.bak_cpa
 /open-cpa
+
+# runtime / caches
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+cpa_auths/
+sub2api_exports/
+sub2_auths/
+*.log

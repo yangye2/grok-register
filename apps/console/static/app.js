@@ -222,7 +222,7 @@
       settingsFormEl.elements.sub2api_account_type.value = defaults.sub2api_account_type || "oauth";
     }
     if (settingsFormEl.elements.sub2api_account_concurrency) {
-      settingsFormEl.elements.sub2api_account_concurrency.value = defaults.sub2api_account_concurrency ?? 10;
+      settingsFormEl.elements.sub2api_account_concurrency.value = defaults.sub2api_account_concurrency ?? 1;
     }
     if (settingsFormEl.elements.sub2api_account_priority) {
       settingsFormEl.elements.sub2api_account_priority.value = defaults.sub2api_account_priority ?? 1;
@@ -1729,7 +1729,7 @@ accountsDownloadBtnEl.addEventListener("click", async () => {
       sub2api_upload_retries: Number(settingsFormEl.elements.sub2api_upload_retries?.value) || 3,
       sub2api_platform: String(settingsFormEl.elements.sub2api_platform?.value || "grok").trim() || "grok",
       sub2api_account_type: String(settingsFormEl.elements.sub2api_account_type?.value || "oauth").trim() || "oauth",
-      sub2api_account_concurrency: Number(settingsFormEl.elements.sub2api_account_concurrency?.value ?? 10) || 10,
+      sub2api_account_concurrency: Number(settingsFormEl.elements.sub2api_account_concurrency?.value ?? 1) || 1,
       sub2api_account_priority: Number(settingsFormEl.elements.sub2api_account_priority?.value ?? 1),
       sub2api_account_load_factor: Number(settingsFormEl.elements.sub2api_account_load_factor?.value ?? 10) || 10,
       sub2api_account_rate_multiplier: Number(settingsFormEl.elements.sub2api_account_rate_multiplier?.value ?? 1) || 1,

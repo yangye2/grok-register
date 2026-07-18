@@ -42,13 +42,12 @@ def _cloud_management_key(config: dict) -> str:
 
 
 def _import_cpa_health_check():
-    """Load health_check.test_cpa_auth_file from project health_check package."""
+    """Load health_check.test_cpa_auth_file from sibling package."""
     try:
         from health_check.health_check import test_cpa_auth_file  # type: ignore
         return test_cpa_auth_file
     except Exception:
         pass
-    # Fallback: load file next to this module / workspace layout
     import importlib.util
 
     candidates = [
@@ -58,17 +57,7 @@ def _import_cpa_health_check():
     env_src = str(os.environ.get("GROK_REGISTER_SOURCE_DIR") or "").strip()
     if env_src:
         root = Path(env_src).expanduser().resolve()
-        candidates.extend(
-            [
-                root / "apps" / "cpa-worker" / "health_check" / "health_check.py",
-                root / "health_check" / "health_check.py",
-            ]
-        )
-    # When cpa_export lives under apps/cpa-worker, sibling package is local.
-    # When copied into an isolated task_dir, env/workspace fallback covers Docker.
-    here = Path(__file__).resolve().parent
-    candidates.append(here.parent / "cpa-worker" / "health_check" / "health_check.py")
-    candidates.append(here.parent.parent / "apps" / "cpa-worker" / "health_check" / "health_check.py")
+        candidates.append(root / "apps" / "cpa-worker" / "health_check" / "health_check.py")
 
     seen: set[str] = set()
     for path in candidates:
@@ -78,14 +67,22 @@ def _import_cpa_health_check():
         seen.add(key)
         if not path.is_file():
             continue
-        spec = importlib.util.spec_from_file_location("cpa_health_check_mod", path)
-        if spec is None or spec.loader is None:
-            continue
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        fn = getattr(mod, "test_cpa_auth_file", None)
-        if callable(fn):
-            return fn
+        parent = path.parent.parent  # package parent (contains health_check/)
+        if str(parent) not in sys.path:
+            sys.path.insert(0, str(parent))
+        try:
+            from health_check.health_check import test_cpa_auth_file  # type: ignore
+            return test_cpa_auth_file
+        except Exception:
+            # file load fallback
+            spec = importlib.util.spec_from_file_location("cpa_health_check_mod", path)
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            fn = getattr(module, "test_cpa_auth_file", None)
+            if callable(fn):
+                return fn
     raise ImportError("cannot import health_check.test_cpa_auth_file")
 
 
@@ -93,7 +90,7 @@ def _import_cpa_health_check():
 
 
 def _import_cpa_to_sub2api():
-    """Load cpa_to_sub2api from worker dir / workspace."""
+    """Load sibling cpa_to_sub2api.py (apps/cpa-worker or task_dir copy)."""
     try:
         import cpa_to_sub2api  # type: ignore
         return cpa_to_sub2api
@@ -108,15 +105,7 @@ def _import_cpa_to_sub2api():
     env_src = str(os.environ.get("GROK_REGISTER_SOURCE_DIR") or "").strip()
     if env_src:
         root = Path(env_src).expanduser().resolve()
-        candidates.extend(
-            [
-                root / "apps" / "cpa-worker" / "cpa_to_sub2api.py",
-                root / "cpa_to_sub2api.py",
-            ]
-        )
-    here = Path(__file__).resolve().parent
-    candidates.append(here.parent / "cpa-worker" / "cpa_to_sub2api.py")
-    candidates.append(here.parent.parent / "apps" / "cpa-worker" / "cpa_to_sub2api.py")
+        candidates.append(root / "apps" / "cpa-worker" / "cpa_to_sub2api.py")
 
     seen: set[str] = set()
     for path in candidates:
@@ -131,9 +120,9 @@ def _import_cpa_to_sub2api():
         spec = importlib.util.spec_from_file_location("cpa_to_sub2api_mod", path)
         if spec is None or spec.loader is None:
             continue
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
     raise ImportError("cannot import cpa_to_sub2api")
 
 

@@ -67,6 +67,7 @@ AUTH_SESSION_MAX_AGE = max(3600, int(os.getenv("GROK_REGISTER_AUTH_SESSION_HOURS
 
 REGISTER_RUNNER_DIR = SOURCE_PROJECT / "apps" / "register-runner"
 CPA_WORKER_DIR = SOURCE_PROJECT / "apps" / "cpa-worker"
+# Isolated task_dir copies (sources under apps/register-runner + apps/cpa-worker; turnstilePatch at repo root)
 PROJECT_FILES = ("DrissionPage_example.py", "email_register.py", "outmail_client.py", "cpa_export.py", "cpa_to_sub2api.py")
 PROJECT_DIRS = ("turnstilePatch", "cpa_xai", "health_check")
 
@@ -991,7 +992,7 @@ class SystemSettings(BaseModel):
     sub2api_upload_retries: int = Field(default=3, ge=1, le=10)
     sub2api_platform: str = "grok"
     sub2api_account_type: str = "oauth"
-    sub2api_account_concurrency: int = Field(default=10, ge=1, le=200)
+    sub2api_account_concurrency: int = Field(default=1, ge=1, le=200)
     sub2api_account_priority: int = Field(default=1, ge=0, le=1000)
     sub2api_account_load_factor: int = Field(default=10, ge=1, le=10000)
     sub2api_account_rate_multiplier: float = Field(default=1.0, ge=0.0)
@@ -1180,7 +1181,7 @@ def merged_defaults() -> dict[str, Any]:
     if acct_type not in {"oauth", "apikey", "upstream"}:
         acct_type = "oauth"
     base["sub2api_account_type"] = acct_type
-    base["sub2api_account_concurrency"] = _as_nonneg_int(base.get("sub2api_account_concurrency"), 10, maximum=200) or 10
+    base["sub2api_account_concurrency"] = _as_nonneg_int(base.get("sub2api_account_concurrency"), 1, maximum=200) or 1
     base["sub2api_account_priority"] = _as_nonneg_int(base.get("sub2api_account_priority"), 1, maximum=1000)
     base["sub2api_account_load_factor"] = _as_nonneg_int(base.get("sub2api_account_load_factor"), 10, maximum=10000) or 10
     try:
@@ -1271,7 +1272,7 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
         "sub2api_upload_retries": defaults.get("sub2api_upload_retries", 3),
         "sub2api_platform": str(defaults.get("sub2api_platform") or "grok"),
         "sub2api_account_type": str(defaults.get("sub2api_account_type") or "oauth"),
-        "sub2api_account_concurrency": defaults.get("sub2api_account_concurrency", 10),
+        "sub2api_account_concurrency": defaults.get("sub2api_account_concurrency", 1),
         "sub2api_account_priority": defaults.get("sub2api_account_priority", 1),
         "sub2api_account_load_factor": defaults.get("sub2api_account_load_factor", 10),
         "sub2api_account_rate_multiplier": defaults.get("sub2api_account_rate_multiplier", 1.0),
@@ -1658,11 +1659,13 @@ def build_account_cpa_config(*, force_cloud_upload: bool = False) -> dict[str, A
 
 
 def load_cpa_export_module():
-    if str(SOURCE_PROJECT) not in sys.path:
-        sys.path.insert(0, str(SOURCE_PROJECT))
+    """Load apps/cpa-worker/cpa_export.py (canonical path; no root legacy copy)."""
     module_path = CPA_WORKER_DIR / "cpa_export.py"
     if not module_path.is_file():
         raise FileNotFoundError(f"CPA module not found: {module_path}")
+    worker_s = str(CPA_WORKER_DIR)
+    if worker_s not in sys.path:
+        sys.path.insert(0, worker_s)
     spec = importlib.util.spec_from_file_location("console_cpa_export", module_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load CPA module: {module_path}")
@@ -2399,24 +2402,14 @@ def ensure_cpa_worker() -> None:
 
 
 def _ensure_cpa_xai_importable() -> None:
-    """Make project cpa_xai importable for console token/sso helpers."""
-    candidates = [
-        SOURCE_PROJECT,
-        CPA_WORKER_DIR,
-        SOURCE_PROJECT / "apps" / "cpa-worker",
-    ]
-    for root in candidates:
-        if (root / "cpa_xai" / "__init__.py").is_file():
-            root_s = str(root)
-            if root_s not in sys.path:
-                sys.path.insert(0, root_s)
-            return
-    # last resort: package next to console
-    local = REPO_ROOT / "cpa_xai"
-    if local.is_dir():
-        root_s = str(REPO_ROOT)
+    """Make apps/cpa-worker/cpa_xai importable for console token/sso helpers."""
+    root = CPA_WORKER_DIR
+    if (root / "cpa_xai" / "__init__.py").is_file():
+        root_s = str(root)
         if root_s not in sys.path:
             sys.path.insert(0, root_s)
+        return
+    raise ModuleNotFoundError(f"cpa_xai not found under {root}")
 
 
 def _account_proxy_for_token_ops(config: dict[str, Any] | None = None) -> str:

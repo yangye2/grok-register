@@ -1,6 +1,6 @@
 # 架构说明
 
-项目按“控制台编排、注册执行、CPA 授权、容器运行时”拆分。根目录保留部分旧入口用于兼容，当前控制台和 Docker 镜像使用 `apps/` 下的新结构。
+项目按“控制台编排、注册执行、CPA 授权、容器运行时”拆分。**权威源码只在 `apps/`**；根目录仅保留配置、compose、补丁与文档，不再放业务 Python 副本。
 
 ## 目录职责
 
@@ -13,6 +13,22 @@
 | `turnstilePatch` | 浏览器扩展补丁，随任务一起复制到独立运行目录 |
 | `runtime/console` | Docker 挂载的控制台运行数据，保存 SQLite、任务目录和日志 |
 | `runtime/cpa_auths` | Docker 挂载的 CPA 授权文件目录 |
+
+
+
+## 源码边界（精简后）
+
+| 路径 | 是否权威 |
+| --- | --- |
+| `apps/console` | 控制台唯一入口 |
+| `apps/register-runner` | 注册执行器唯一入口 |
+| `apps/cpa-worker` | CPA / Sub2API / `cpa_xai` 唯一入口 |
+| `apps/worker-runtime/Dockerfile` | 镜像构建定义 |
+| 根目录 `*.py` | **已移除**（避免与 apps 双份漂移） |
+| `turnstilePatch/` | 浏览器补丁（任务复制用） |
+| `config.example.json` / `docker-compose.yml` | 配置与编排 |
+
+任务启动时由控制台把 `apps/register-runner` + `apps/cpa-worker` 相关文件复制到隔离 `task_dir` 执行。
 
 ## 控制台如何启动任务
 
