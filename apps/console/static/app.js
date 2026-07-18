@@ -173,7 +173,10 @@
     settingsFormEl.elements.cpa_export_enabled.checked = Boolean(defaults.cpa_export_enabled);
     settingsFormEl.elements.cpa_copy_to_hotload.checked = Boolean(defaults.cpa_copy_to_hotload);
     settingsFormEl.elements.cpa_headless.checked = Boolean(defaults.cpa_headless);
-    settingsFormEl.elements.cpa_cloud_upload_enabled.checked = Boolean(defaults.cpa_cloud_upload_enabled);
+    settingsFormEl.elements.cpa_cloud_upload_enabled.checked = defaults.cpa_cloud_upload_enabled !== false;
+    if (settingsFormEl.elements.cpa_register_push_enabled) {
+      settingsFormEl.elements.cpa_register_push_enabled.checked = Boolean(defaults.cpa_register_push_enabled);
+    }
     settingsFormEl.elements.cpa_cloud_api_base.value = defaults.cpa_cloud_api_base || "";
     settingsFormEl.elements.cpa_cloud_management_key.value = "";
     settingsFormEl.elements.cpa_cloud_upload_timeout.value = defaults.cpa_cloud_upload_timeout || 30;
@@ -200,7 +203,10 @@
       settingsFormEl.elements.cpa_health_check_use_file_headers.checked = defaults.cpa_health_check_use_file_headers !== false;
     }
     if (settingsFormEl.elements.sub2api_upload_enabled) {
-      settingsFormEl.elements.sub2api_upload_enabled.checked = Boolean(defaults.sub2api_upload_enabled);
+      settingsFormEl.elements.sub2api_upload_enabled.checked = defaults.sub2api_upload_enabled !== false;
+    }
+    if (settingsFormEl.elements.sub2api_register_push_enabled) {
+      settingsFormEl.elements.sub2api_register_push_enabled.checked = Boolean(defaults.sub2api_register_push_enabled);
     }
     if (settingsFormEl.elements.sub2api_export_enabled) {
       settingsFormEl.elements.sub2api_export_enabled.checked = Boolean(defaults.sub2api_export_enabled);
@@ -713,7 +719,7 @@ function isCpaBusy(account) {
     accountsSelectAllEl.indeterminate = pageSelectedCount > 0 && pageSelectedCount < pageIds.length;
     if (accountsCpaCancelBtnEl) accountsCpaCancelBtnEl.disabled = !(state.cpaQueue && state.cpaQueue.active);
     if (accountsCpaExportBtnEl) {
-      accountsCpaExportBtnEl.disabled = !( (state.cpaQueue && (state.cpaQueue.results || []).length) || state.selectedAccountIds.size > 0 );
+      accountsCpaExportBtnEl.disabled = state.selectedAccountIds.size === 0;
     }
     accountsPrevPageBtnEl.disabled = state.accountPage <= 1;
     accountsNextPageBtnEl.disabled = state.accountPage >= state.accountTotalPages;
@@ -1370,7 +1376,7 @@ function isCpaBusy(account) {
       accountsCpaQueueMessageEl.textContent = q.message || (cur ? `当前: ${cur}` : "空闲");
     }
     if (accountsCpaCancelBtnEl) accountsCpaCancelBtnEl.disabled = !q.active;
-    if (accountsCpaExportBtnEl) accountsCpaExportBtnEl.disabled = !( (q.results || []).length || state.selectedAccountIds.size > 0 );
+    if (accountsCpaExportBtnEl) accountsCpaExportBtnEl.disabled = state.selectedAccountIds.size === 0;
   }
 
   async function refreshCpaQueue() {
@@ -1523,20 +1529,14 @@ async function startBatchCpa(mode) {
   }
   if (accountsCpaExportBtnEl) {
     accountsCpaExportBtnEl.title =
-      "选中账号导出 email----password----sso；若有队列结果则优先导出队列 CSV";
+      "导出选中账号为 txt：email----password----sso（每行一条）";
     accountsCpaExportBtnEl.addEventListener("click", async () => {
-      const queueResults = (state.cpaQueue && state.cpaQueue.results) || [];
+      const ids = Array.from(state.selectedAccountIds);
+      if (!ids.length) {
+        accountsMetaEl.textContent = "请先选择要导出的账号";
+        return;
+      }
       try {
-        if (queueResults.length) {
-          window.open("/api/accounts/cpa/queue/export", "_blank");
-          accountsMetaEl.textContent = `已导出队列结果（含 email----password----sso）共 ${queueResults.length} 条`;
-          return;
-        }
-        const ids = Array.from(state.selectedAccountIds);
-        if (!ids.length) {
-          accountsMetaEl.textContent = "请先选择账号，或等待队列产生结果";
-          return;
-        }
         const response = await fetch("/api/accounts/export", {
           method: "POST",
           credentials: "same-origin",
@@ -1555,16 +1555,26 @@ async function startBatchCpa(mode) {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         const cd = response.headers.get("content-disposition") || "";
-        const m = /filename=\"?([^\";]+)\"?/i.exec(cd);
+        const m = /filename="?([^";]+)"?/i.exec(cd);
         a.href = url;
-        a.download = (m && m[1]) || `accounts_${Date.now()}.csv`;
+        a.download = (m && m[1]) || ("accounts_" + Date.now() + ".txt");
         document.body.appendChild(a);
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
-        accountsMetaEl.textContent = `已导出账号（email----password----sso）共 ${ids.length} 条`;
+        accountsMetaEl.textContent = `已导出账号 txt（email----password----sso）共 ${ids.length} 条`;
       } catch (error) {
-        accountsMetaEl.textContent = `导出失败: ${error.message || error}`;
+        try {
+          const data = await fetchJson("/api/accounts/by-ids", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ account_ids: ids }),
+          });
+          downloadAccountLines(data.accounts || [], "accounts_" + Date.now() + ".txt");
+          accountsMetaEl.textContent = `已导出账号 txt（本地回退）共 ${ids.length} 条`;
+        } catch (e2) {
+          accountsMetaEl.textContent = `导出失败: ${error.message || error}`;
+        }
       }
     });
   }
@@ -1756,6 +1766,7 @@ accountsDownloadBtnEl.addEventListener("click", async () => {
       cpa_copy_to_hotload: settingsFormEl.elements.cpa_copy_to_hotload.checked,
       cpa_headless: settingsFormEl.elements.cpa_headless.checked,
       cpa_cloud_upload_enabled: settingsFormEl.elements.cpa_cloud_upload_enabled.checked,
+      cpa_register_push_enabled: Boolean(settingsFormEl.elements.cpa_register_push_enabled?.checked),
       cpa_cloud_api_base: settingsFormEl.elements.cpa_cloud_api_base.value.trim(),
       cpa_cloud_upload_timeout: Number(settingsFormEl.elements.cpa_cloud_upload_timeout.value) || 30,
       cpa_cloud_upload_retries: Number(settingsFormEl.elements.cpa_cloud_upload_retries.value) || 3,
@@ -1767,6 +1778,7 @@ accountsDownloadBtnEl.addEventListener("click", async () => {
       cpa_health_check_headers: String(settingsFormEl.elements.cpa_health_check_headers?.value || "").trim(),
       cpa_health_check_use_file_headers: Boolean(settingsFormEl.elements.cpa_health_check_use_file_headers?.checked),
       sub2api_upload_enabled: Boolean(settingsFormEl.elements.sub2api_upload_enabled?.checked),
+      sub2api_register_push_enabled: Boolean(settingsFormEl.elements.sub2api_register_push_enabled?.checked),
       sub2api_export_enabled: Boolean(settingsFormEl.elements.sub2api_export_enabled?.checked),
       sub2api_api_base: String(settingsFormEl.elements.sub2api_api_base?.value || "").trim(),
       sub2api_upload_timeout: Number(settingsFormEl.elements.sub2api_upload_timeout?.value) || 30,

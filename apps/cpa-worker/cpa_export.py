@@ -380,8 +380,10 @@ def export_cpa_xai_via_sso(
     """Mint CPA auth via pure HTTP SSO device-flow (no browser password login)."""
     cfg = config or {}
     log = log_callback or (lambda m: print(m, flush=True))
+    # cpa_export_enabled: 主要用于注册任务「是否自动导出」。
+    # 账号管理手动 OAuth 会在 console 侧强制传 True。
     if not cfg.get("cpa_export_enabled", True):
-        log("[cpa] export disabled")
+        log("[cpa] export disabled (cpa_export_enabled=false)")
         return {"ok": False, "skipped": True, "reason": "disabled"}
     sso_val = (sso or "").strip()
     email = (email or "").strip()
@@ -485,8 +487,9 @@ def export_cpa_xai_for_account(
     cfg = config or {}
     log = log_callback or (lambda m: print(m, flush=True))
 
+    # 注册后自动 mint/导出开关；手动账号维护应传 cpa_export_enabled=True
     if not cfg.get("cpa_export_enabled", True):
-        log("[cpa] export disabled")
+        log("[cpa] export disabled (cpa_export_enabled=false)")
         return {"ok": False, "skipped": True, "reason": "disabled"}
 
     tools_dir = cfg.get("api_reverse_tools") or cfg.get("cpa_xai_parent") or None

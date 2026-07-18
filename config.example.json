@@ -21,7 +21,7 @@
   "cpa_probe_chat": false,
   "cpa_mint_cookie_inject": true,
   "cpa_mint_browser_reuse": false,
-  "cpa_cloud_upload_enabled": false,
+  "cpa_cloud_upload_enabled": true,
   "cpa_cloud_api_base": "",
   "cpa_cloud_management_key": "",
   "cpa_cloud_upload_timeout": 30,
@@ -35,7 +35,7 @@
   "domain_auth_fail_threshold": 3,
   "domain_auth_fail_auto_remove": true,
   "temp_mail_domains_removed": [],
-  "sub2api_upload_enabled": false,
+  "sub2api_upload_enabled": true,
   "sub2api_api_base": "",
   "sub2api_api_key": "",
   "sub2api_upload_timeout": 30,
@@ -76,5 +76,7 @@
   "outmail_plus_alias_count": 1,
   "outmail_alias_suffix_len": 6,
   "cpa_probe_delay_sec": 5.0,
-  "cpa_probe_required": false
+  "cpa_probe_required": false,
+  "cpa_register_push_enabled": false,
+  "sub2api_register_push_enabled": false
 }

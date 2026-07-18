@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Grok Register Console</title>
-  <link rel="stylesheet" href="/static/app.css?v=1784358439">
+  <link rel="stylesheet" href="/static/app.css?v=1784361456">
 </head>
 <body>
   <div class="shell">
@@ -139,7 +139,7 @@
               </div>
               <span class="accounts-toolbar-sep" aria-hidden="true"></span>
               <div class="accounts-toolbar-group" title="导出与删除">
-                <button id="accountsCpaExportBtn" class="button button-teal" type="button" disabled title="选中账号: email----password----sso；有队列结果时优先导出队列CSV">导出账号</button>
+                <button id="accountsCpaExportBtn" class="button button-teal" type="button" disabled title="选中账号导出 txt：email----password----sso">导出账号</button>
                 <button id="accountsDownloadBtn" class="button button-teal" type="button">导出SSO</button>
                 <button id="accountsDeleteBtn" class="button button-danger" type="button">批量删除</button>
               </div>
@@ -442,11 +442,11 @@
             </details>
 
             <details class="settings-section">
-              <summary>CPA 授权与测活</summary>
+              <summary>注册授权与测活</summary>
               <div class="settings-grid">
                 <label class="checkbox-field">
                   <input name="cpa_export_enabled" type="checkbox" checked>
-                  <span>启用 CPA 授权导出 <em>cpa_export_enabled</em></span>
+                  <span>启用注册后 OAuth/写授权文件 <em>cpa_export_enabled</em>（不含远程推送；不影响账号管理手动 OAuth）</span>
                 </label>
                 <label class="checkbox-field">
                   <input name="cpa_prefer_sso_oauth" type="checkbox" checked>
@@ -526,8 +526,12 @@
               <summary>远程 CPA 推送</summary>
               <div class="settings-grid">
                 <label class="checkbox-field">
-                  <input name="cpa_cloud_upload_enabled" type="checkbox">
-                  <span>启用远程 CPA 推送 <em>cpa_cloud_upload_enabled</em></span>
+                  <input name="cpa_cloud_upload_enabled" type="checkbox" checked>
+                  <span>是否启用 CPA 推送 <em>cpa_cloud_upload_enabled</em>（账号管理批量推送需要开启）</span>
+                </label>
+                <label class="checkbox-field">
+                  <input name="cpa_register_push_enabled" type="checkbox">
+                  <span>注册完成后自动推送 CPA <em>cpa_register_push_enabled</em></span>
                 </label>
                 <label>
                   <span>CPA 管理地址 <em>cpa_cloud_api_base</em></span>
@@ -552,8 +556,12 @@
               <summary>Sub2API 推送 / 导出</summary>
               <div class="settings-grid">
                 <label class="checkbox-field">
-                  <input name="sub2api_upload_enabled" type="checkbox">
-                  <span>推送到远程 Sub2API <em>sub2api_upload_enabled</em></span>
+                  <input name="sub2api_upload_enabled" type="checkbox" checked>
+                  <span>是否启用 Sub2 推送 <em>sub2api_upload_enabled</em>（账号管理批量推送需要开启）</span>
+                </label>
+                <label class="checkbox-field">
+                  <input name="sub2api_register_push_enabled" type="checkbox">
+                  <span>注册完成后自动推送 Sub2 <em>sub2api_register_push_enabled</em></span>
                 </label>
                 <label class="checkbox-field">
                   <input name="sub2api_export_enabled" type="checkbox">
@@ -722,6 +730,6 @@
   <script>
     window.__DEFAULTS__ = {{ defaults|safe }};
   </script>
-  <script src="/static/app.js?v=1784358439" charset="utf-8"></script>
+  <script src="/static/app.js?v=1784361456" charset="utf-8"></script>
 </body>
 </html>

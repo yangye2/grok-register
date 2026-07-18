@@ -505,13 +505,13 @@ button {
 
 .account-cpa-log {
   margin: 10px 0 0;
-  max-height: 320px;
+  max-height: 360px;
   overflow: auto;
-  padding: 10px;
+  padding: 12px 14px;
   border-radius: 12px;
   background: #0f172a;
   color: #e2e8f0;
-  font: 11px/1.55 "SFMono-Regular", "IBM Plex Mono", monospace;
+  font: 13px/1.6 "SFMono-Regular", "IBM Plex Mono", "Cascadia Mono", monospace;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -587,9 +587,9 @@ button {
 
 .accounts-table th:nth-child(11),
 .accounts-table td:nth-child(11) {
-  width: 150px;
-  min-width: 140px;
-  max-width: 160px;
+  width: 180px;
+  min-width: 170px;
+  max-width: 200px;
   overflow: visible;
   white-space: nowrap;
   text-overflow: clip;
@@ -1260,16 +1260,20 @@ html[data-theme="dark"] .status-pill.tone-info {
   text-decoration: none;
 }
 
-/* Compact action buttons */
+/* Account row action buttons */
 .account-actions {
   display: flex;
-  gap: 4px;
+  gap: 6px;
   flex-wrap: nowrap;
   white-space: nowrap;
+  align-items: center;
 }
 .account-actions .button-small {
-  padding: 5px 8px;
-  font-size: 10px;
+  padding: 7px 10px;
+  font-size: 12px;
+  border-radius: 10px;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 /* Filter bar extras */
@@ -1314,13 +1318,21 @@ html[data-theme="dark"] .settings-save-bar {
 .account-token-status .status-pill,
 .account-sso-alive .status-pill {
   max-width: 100%;
-  padding: 4px 7px;
-  font-size: 10px;
+  padding: 5px 8px;
+  font-size: 11px;
 }
 .account-actions {
-  gap: 4px !important;
+  gap: 6px !important;
 }
 .account-actions .button-small {
-  padding: 5px 7px;
-  font-size: 10px;
+  padding: 7px 10px !important;
+  font-size: 12px !important;
+}
+
+#accountCpaLogTitle {
+  font-size: 14px;
+  font-weight: 700;
+}
+.account-cpa-log-panel .task-row {
+  align-items: center;
 }

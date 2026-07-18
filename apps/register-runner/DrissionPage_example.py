@@ -249,11 +249,17 @@ def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
                 result["ok"] = False
                 result["error"] = f"liveness: {exc}"
 
-    # ---- 3) 可选推送（注册自动化；账号管理单独 OAuth/测活不自动推）----
+    # ---- 3) 可选推送：注册后自动 CPA / Sub2（与账号管理批量推送开关分离）----
     if result.get("ok") and auth_path:
         push_path = str(result.get("cpa_path") or result.get("hotload_path") or auth_path)
+        # 注册后自动推 CPA：cpa_register_push_enabled（兼容旧 cpa_cloud_upload_enabled）
+        reg_cpa_push = bool(cfg.get("cpa_register_push_enabled", cfg.get("cpa_cloud_upload_enabled", False)))
+        reg_sub2_push = bool(cfg.get("sub2api_register_push_enabled", cfg.get("sub2api_upload_enabled", False)))
+        push_cfg = dict(cfg)
+        push_cfg["cpa_cloud_upload_enabled"] = reg_cpa_push and bool(cfg.get("cpa_cloud_upload_enabled", True))
+        push_cfg["sub2api_upload_enabled"] = reg_sub2_push and bool(cfg.get("sub2api_upload_enabled", True))
         try:
-            cloud = cpa_export.upload_cpa_auth_to_cloud(push_path, cfg, log)
+            cloud = cpa_export.upload_cpa_auth_to_cloud(push_path, push_cfg, log)
             result["cloud_cpa_upload"] = cloud
             if isinstance(cloud, dict) and cloud.get("ok"):
                 result["cloud_uploaded"] = True
@@ -268,13 +274,13 @@ def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
             log(f"[cpa] cloud upload exception: {exc}")
             result["cloud_cpa_upload"] = {"ok": False, "error": str(exc)}
 
-        if bool(cfg.get("sub2api_upload_enabled", False)) or bool(
-            cfg.get("sub2api_export_enabled", False)
+        if bool(push_cfg.get("sub2api_upload_enabled", False)) or bool(
+            push_cfg.get("sub2api_export_enabled", False)
         ):
             try:
                 sub_mod = cpa_export._import_cpa_to_sub2api()
                 sub_res = sub_mod.export_after_cpa_result(
-                    result, config=cfg, log_callback=log
+                    result, config=push_cfg, log_callback=log
                 )
                 result["sub2api"] = sub_res
             except Exception as exc:

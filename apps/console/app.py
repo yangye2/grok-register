@@ -339,7 +339,9 @@ def load_source_defaults() -> dict[str, Any]:
         "cpa_copy_to_hotload": "GROK_REGISTER_DEFAULT_CPA_COPY_TO_HOTLOAD",
         "cpa_headless": "GROK_REGISTER_DEFAULT_CPA_HEADLESS",
         "cpa_cloud_upload_enabled": "CPA_CLOUD_UPLOAD_ENABLED",
+        "cpa_register_push_enabled": "CPA_REGISTER_PUSH_ENABLED",
         "sub2api_upload_enabled": "SUB2API_UPLOAD_ENABLED",
+        "sub2api_register_push_enabled": "SUB2API_REGISTER_PUSH_ENABLED",
         "sub2api_export_enabled": "SUB2API_EXPORT_ENABLED",
         "sub2api_local_export": "SUB2API_LOCAL_EXPORT",
     }
@@ -970,7 +972,8 @@ class SystemSettings(BaseModel):
     cpa_probe_after_write: bool = True
     cpa_probe_delay_sec: float = Field(default=5.0, ge=0.0, le=120.0)
     cpa_probe_required: bool = False
-    cpa_cloud_upload_enabled: bool = False
+    cpa_cloud_upload_enabled: bool = True
+    cpa_register_push_enabled: bool = False
     cpa_cloud_api_base: str = ""
     cpa_cloud_management_key: str | None = None
     cpa_cloud_upload_timeout: int = Field(default=30, ge=5, le=180)
@@ -988,7 +991,8 @@ class SystemSettings(BaseModel):
         "User-Agent: grok-shell/0.2.93 (linux; x86_64)"
     )
     cpa_health_check_use_file_headers: bool = True
-    sub2api_upload_enabled: bool = False
+    sub2api_upload_enabled: bool = True
+    sub2api_register_push_enabled: bool = False
     sub2api_export_enabled: bool = False
     sub2api_api_base: str = ""
     sub2api_api_key: str | None = None
@@ -1129,12 +1133,12 @@ def merged_defaults() -> dict[str, Any]:
         if key in saved:
             base[key] = saved[key]
     for key in ("cpa_export_enabled", "cpa_auth_dir", "cpa_copy_to_hotload", "cpa_hotload_dir",
-                "cpa_proxy", "cpa_headless", "cpa_mint_timeout_sec", "cpa_cloud_upload_enabled",
+                "cpa_proxy", "cpa_headless", "cpa_mint_timeout_sec", "cpa_cloud_upload_enabled", "cpa_register_push_enabled",
                 "cpa_cloud_api_base", "cpa_cloud_management_key", "cpa_cloud_upload_timeout",
                 "cpa_cloud_upload_retries", "cpa_batch_retry_count", "cpa_mint_browser_recycle_every",
                 "cpa_health_check_before_upload", "cpa_health_check_timeout", "cpa_health_check_model",
                 "cpa_health_check_headers", "cpa_health_check_use_file_headers",
-                "sub2api_upload_enabled", "sub2api_export_enabled", "sub2api_api_base",
+                "sub2api_upload_enabled", "sub2api_register_push_enabled", "sub2api_export_enabled", "sub2api_api_base",
                 "sub2api_api_key", "sub2api_upload_timeout", "sub2api_upload_retries",
                 "sub2api_platform", "sub2api_account_type", "sub2api_account_concurrency",
                 "sub2api_account_priority", "sub2api_account_load_factor",
@@ -1166,9 +1170,27 @@ def merged_defaults() -> dict[str, Any]:
     else:
         base["cpa_health_check_use_file_headers"] = bool(base.get("cpa_health_check_use_file_headers"))
     if "sub2api_upload_enabled" not in base:
-        base["sub2api_upload_enabled"] = False
+        base["sub2api_upload_enabled"] = True
     else:
         base["sub2api_upload_enabled"] = bool(base.get("sub2api_upload_enabled"))
+    # 兼容迁移：旧版把 upload_enabled 当「注册后自动推送」
+    if "sub2api_register_push_enabled" not in base and "sub2api_register_push_enabled" not in saved:
+        base["sub2api_register_push_enabled"] = bool(saved.get("sub2api_upload_enabled", False)) if isinstance(saved, dict) else False
+    else:
+        base["sub2api_register_push_enabled"] = bool(base.get("sub2api_register_push_enabled", False))
+    if "cpa_cloud_upload_enabled" not in base:
+        base["cpa_cloud_upload_enabled"] = True
+    else:
+        base["cpa_cloud_upload_enabled"] = bool(base.get("cpa_cloud_upload_enabled"))
+    if "cpa_register_push_enabled" not in base and "cpa_register_push_enabled" not in saved:
+        # 旧版 cpa_cloud_upload_enabled=true 表示注册后自动推
+        base["cpa_register_push_enabled"] = bool(saved.get("cpa_cloud_upload_enabled", False)) if isinstance(saved, dict) else False
+        # 总开关改为「是否启用」，账号管理可推：默认 True
+        if "cpa_cloud_upload_enabled" in saved and not bool(saved.get("cpa_register_push_enabled", False)):
+            # 若用户以前关掉自动推送，总开关仍应可用
+            base["cpa_cloud_upload_enabled"] = True
+    else:
+        base["cpa_register_push_enabled"] = bool(base.get("cpa_register_push_enabled", False))
     if "sub2api_export_enabled" not in base:
         base["sub2api_export_enabled"] = False
     else:
@@ -1268,7 +1290,8 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
             defaults.get("cpa_health_check_headers") or _default_health_headers_text()
         ),
         "cpa_health_check_use_file_headers": bool(defaults.get("cpa_health_check_use_file_headers", True)),
-        "cpa_cloud_upload_enabled": defaults.get("cpa_cloud_upload_enabled", False),
+        "cpa_cloud_upload_enabled": defaults.get("cpa_cloud_upload_enabled", True),
+        "cpa_register_push_enabled": bool(defaults.get("cpa_register_push_enabled", False)),
         "cpa_cloud_api_base": defaults.get("cpa_cloud_api_base", ""),
         "cpa_cloud_upload_timeout": defaults.get("cpa_cloud_upload_timeout", 30),
         "cpa_cloud_upload_retries": defaults.get("cpa_cloud_upload_retries", 3),
@@ -1597,8 +1620,17 @@ def _sanitize_file_segment(value: str) -> str:
 
 
 
-def build_account_cpa_config(*, force_cloud_upload: bool = False) -> dict[str, Any]:
-    """Console-side CPA config for account authorize/push (includes secrets)."""
+def build_account_cpa_config(
+    *,
+    force_cloud_upload: bool = False,
+    force_export_enabled: bool = True,
+) -> dict[str, Any]:
+    """Console-side CPA config for account authorize/push (includes secrets).
+
+    force_export_enabled:
+      账号管理手动 OAuth/授权默认 True，避免 cpa_export_enabled=false
+      （仅用于关闭「注册后自动导出」）把账号维护也关掉。
+    """
     account_cpa_config = normalize_console_cpa_paths(merged_defaults())
     if not str(account_cpa_config.get("cpa_auth_dir") or "").strip():
         account_cpa_config["cpa_auth_dir"] = str(SOURCE_PROJECT / "cpa_auths")
@@ -1671,6 +1703,8 @@ def build_account_cpa_config(*, force_cloud_upload: bool = False) -> dict[str, A
     if plat in {"openai", "chatgpt", "codex", ""}:
         plat = "grok"
     account_cpa_config["sub2api_platform"] = plat
+    if force_export_enabled:
+        account_cpa_config["cpa_export_enabled"] = True
     return account_cpa_config
 
 
@@ -2149,31 +2183,45 @@ def _cpa_queue_snapshot() -> dict[str, Any]:
 
 
 def _validate_cpa_cloud_config(mode: str) -> str | None:
-    """Return error message when cloud push config is incomplete for the given mode."""
+    """CPA 推送配置校验。
+
+    - cpa_cloud_upload_enabled: 是否启用 CPA 推送（账号管理批量推送需要）
+    - cpa_register_push_enabled: 注册完成后是否自动推送 CPA
+    """
     settings = merged_defaults()
     saved = read_settings()
-    enabled = bool(settings.get("cpa_cloud_upload_enabled"))
+    feature_enabled = bool(settings.get("cpa_cloud_upload_enabled"))
+    register_push = bool(settings.get("cpa_register_push_enabled"))
     api_base = str(settings.get("cpa_cloud_api_base") or "").strip()
-    management_key = str(saved.get("cpa_cloud_management_key") or settings.get("cpa_cloud_management_key") or "").strip()
+    management_key = str(
+        saved.get("cpa_cloud_management_key")
+        or settings.get("cpa_cloud_management_key")
+        or ""
+    ).strip()
 
     if mode == "push_only":
-        if not enabled:
-            return "未开启「推送 CPA 授权到远程」，无法批量推送"
+        if not feature_enabled:
+            return "未启用 CPA 推送，请在配置「远程 CPA」中打开「是否启用」"
         if not api_base:
-            return "未配置远程 CPA 管理地址"
+            return "未配置远程 CPA 管理地址（cpa_cloud_api_base）"
         if not management_key:
-            return "未配置远程 CPA 管理密钥"
+            return "未配置远程 CPA 管理密钥（cpa_cloud_management_key）"
         return None
 
     if mode == "push_sub2api":
         return None
 
-    # authorize_and_push: only require full cloud config when upload is enabled
-    if enabled:
+    # authorize_and_push：注册/账号「授权并推送」若会自动推 CPA，则校验
+    if register_push or feature_enabled:
+        # 仅注册自动推需要 register_push；账号 authorize_and_push 用 force 时另说
+        pass
+    if register_push:
+        if not feature_enabled:
+            return "已开启「注册后自动推送 CPA」，请先打开「是否启用 CPA 推送」"
         if not api_base:
-            return "已开启远程推送，但未配置远程 CPA 管理地址"
+            return "已开启注册后自动推送 CPA，但未配置远程 CPA 管理地址"
         if not management_key:
-            return "已开启远程推送，但未配置远程 CPA 管理密钥"
+            return "已开启注册后自动推送 CPA，但未配置远程 CPA 管理密钥"
     return None
 
 
@@ -2192,6 +2240,8 @@ def _validate_sub2api_config(mode: str) -> str | None:
     ).strip()
 
     if mode == "push_sub2api":
+        if not upload_enabled:
+            return "未启用 Sub2 推送，请在配置中打开「是否启用」"
         if not api_base:
             return "未配置 Sub2API 地址（sub2api_api_base）"
         if not api_key:
@@ -2887,8 +2937,14 @@ def run_account_sso_oauth(
     account_log("开始 SSO OAuth（纯 HTTP device-flow）")
     try:
         mod = load_cpa_export_module()
-        # 与注册完成后 / 单独 OAuth 一致：纯 SSO OAuth，不做内置 models probe
-        oauth_cfg = {**cfg, "cpa_prefer_sso_oauth": True, "cpa_probe_after_write": False}
+        # 账号管理手动 OAuth：不受 cpa_export_enabled 限制
+        # （该开关只控制「注册成功后是否自动导出/授权」）
+        oauth_cfg = {
+            **cfg,
+            "cpa_export_enabled": True,
+            "cpa_prefer_sso_oauth": True,
+            "cpa_probe_after_write": False,
+        }
         if hasattr(mod, "export_cpa_xai_via_sso"):
             result = mod.export_cpa_xai_via_sso(
                 email,
