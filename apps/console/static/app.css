@@ -1015,15 +1015,27 @@ button {
 }
 
 .settings-section > summary::-webkit-details-marker { display: none; }
+.settings-section > summary::marker { content: ""; }
+.settings-section > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
 .settings-section > summary::after {
-  content: "?";
-  float: right;
-  color: var(--muted);
-  font-size: 12px;
+  content: "";
+  flex: 0 0 auto;
+  width: 0.55em;
+  height: 0.55em;
+  margin-left: auto;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg); /* down when open */
   transition: transform 0.15s ease;
+  opacity: 0.85;
 }
 .settings-section:not([open]) > summary::after {
-  transform: rotate(-90deg);
+  transform: rotate(-45deg); /* right when collapsed */
 }
 
 .settings-subhead {

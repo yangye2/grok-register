@@ -964,8 +964,8 @@ class SystemSettings(BaseModel):
     domain_auth_fail_threshold: int = Field(default=3, ge=1, le=100)
     domain_auth_fail_auto_remove: bool = True
     cpa_export_enabled: bool = False
-    cpa_post_task_oauth_enabled: bool = True
-    cpa_post_task_refresh_enabled: bool = False
+    cpa_post_task_oauth_enabled: bool = False
+    cpa_post_task_refresh_enabled: bool = True
     cpa_auth_dir: str = "./cpa_auths"
     cpa_copy_to_hotload: bool = False
     cpa_hotload_dir: str = ""
@@ -1158,16 +1158,16 @@ def merged_defaults() -> dict[str, Any]:
     )
 
     if "cpa_post_task_oauth_enabled" not in base:
-        # 默认：任务结束后再批量 OAuth（避免每注册一个就 OAuth）
-        base["cpa_post_task_oauth_enabled"] = True
+        # 默认不做完整 OAuth；用批量续期（无 auth 时 SSO 兜底重建）
+        base["cpa_post_task_oauth_enabled"] = False
     else:
         base["cpa_post_task_oauth_enabled"] = bool(base.get("cpa_post_task_oauth_enabled"))
     if "cpa_post_task_refresh_enabled" not in base:
-        base["cpa_post_task_refresh_enabled"] = False
+        base["cpa_post_task_refresh_enabled"] = True
     else:
         base["cpa_post_task_refresh_enabled"] = bool(base.get("cpa_post_task_refresh_enabled"))
-    # 若开启任务后 OAuth，则关闭注册中即时 OAuth，避免重复
-    if base.get("cpa_post_task_oauth_enabled"):
+    # 任务后维护（续期或 OAuth）开启时，关闭注册中即时 OAuth
+    if base.get("cpa_post_task_oauth_enabled") or base.get("cpa_post_task_refresh_enabled"):
         base["cpa_export_enabled"] = False
 
     if "cpa_health_check_before_upload" not in base:
@@ -1285,15 +1285,15 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
         "outmail_used_file": str(defaults.get("outmail_used_file") or "outmail_used_mailboxes.txt"),
         "cpa_export_enabled": (
             False
-            if bool(defaults.get("cpa_post_task_oauth_enabled", True))
+            if bool(defaults.get("cpa_post_task_oauth_enabled", False) or defaults.get("cpa_post_task_refresh_enabled", True))
             else (
-                defaults.get("cpa_export_enabled", True)
+                defaults.get("cpa_export_enabled", False)
                 if payload.cpa_export_enabled is None
                 else payload.cpa_export_enabled
             )
         ),
-        "cpa_post_task_oauth_enabled": bool(defaults.get("cpa_post_task_oauth_enabled", True)),
-        "cpa_post_task_refresh_enabled": bool(defaults.get("cpa_post_task_refresh_enabled", False)),
+        "cpa_post_task_oauth_enabled": bool(defaults.get("cpa_post_task_oauth_enabled", False)),
+        "cpa_post_task_refresh_enabled": bool(defaults.get("cpa_post_task_refresh_enabled", True)),
         "cpa_post_task_push_cpa": bool(defaults.get("cpa_register_push_enabled", False)),
         "cpa_post_task_push_sub2": bool(defaults.get("sub2api_register_push_enabled", False)),
         "cpa_prefer_sso_oauth": bool(defaults.get("cpa_prefer_sso_oauth", True)),
@@ -2396,8 +2396,8 @@ def _process_one_cpa_job(account_id: int, mode: str) -> tuple[bool, str, str]:
                 task_cfg = json.loads(row_get(tr, "config_json", "{}") or "{}") or {}
         except Exception:
             task_cfg = {}
-        do_oauth = bool(task_cfg.get("cpa_post_task_oauth_enabled", True))
-        do_refresh = bool(task_cfg.get("cpa_post_task_refresh_enabled", False))
+        do_oauth = bool(task_cfg.get("cpa_post_task_oauth_enabled", False))
+        do_refresh = bool(task_cfg.get("cpa_post_task_refresh_enabled", True))
         do_push_cpa = bool(task_cfg.get("cpa_post_task_push_cpa", task_cfg.get("cpa_register_push_enabled", False)))
         do_push_sub2 = bool(task_cfg.get("cpa_post_task_push_sub2", task_cfg.get("sub2api_register_push_enabled", False)))
 
@@ -3100,7 +3100,7 @@ def schedule_post_task_account_maintain(task_id: int) -> dict[str, Any]:
         cfg = {}
 
     post_oauth = bool(cfg.get("cpa_post_task_oauth_enabled", False))
-    post_refresh = bool(cfg.get("cpa_post_task_refresh_enabled", False))
+    post_refresh = bool(cfg.get("cpa_post_task_refresh_enabled", True))
     post_push_cpa = bool(cfg.get("cpa_post_task_push_cpa", cfg.get("cpa_register_push_enabled", False)))
     post_push_sub2 = bool(cfg.get("cpa_post_task_push_sub2", cfg.get("sub2api_register_push_enabled", False)))
 
@@ -3118,12 +3118,14 @@ def schedule_post_task_account_maintain(task_id: int) -> dict[str, Any]:
         return {"ok": True, "skipped": True, "reason": "no_accounts", "task_id": task_id}
 
     # Choose a sequential pipeline mode so each account finishes OAuth before next
-    if post_oauth and (post_refresh or post_push_cpa or post_push_sub2):
+    # 流水线：续期/OAuth 后可选推送。仅续期用 refresh_only；有多项用 pipeline
+    steps = sum([post_oauth, post_refresh, post_push_cpa, post_push_sub2])
+    if steps >= 2 or (post_oauth and post_refresh):
         mode = "post_task_pipeline"
-    elif post_oauth:
-        mode = "oauth_only"
     elif post_refresh:
         mode = "refresh_only"
+    elif post_oauth:
+        mode = "oauth_only"
     elif post_push_cpa:
         mode = "push_only"
     else:

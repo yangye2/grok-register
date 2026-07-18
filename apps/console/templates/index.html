@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Grok Register Console</title>
-  <link rel="stylesheet" href="/static/app.css?v=1784361877">
+  <link rel="stylesheet" href="/static/app.css?v=1784362576">
 </head>
 <body>
   <div class="shell">
@@ -445,12 +445,12 @@
               <summary>注册授权与测活</summary>
               <div class="settings-grid">
                 <label class="checkbox-field">
-                  <input name="cpa_post_task_oauth_enabled" type="checkbox" checked>
-                  <span>任务全部完成后批量 OAuth <em>cpa_post_task_oauth_enabled</em>（推荐；避免每注册一个就授权）</span>
+                  <input name="cpa_post_task_refresh_enabled" type="checkbox" checked>
+                  <span>任务完成后批量续期 <em>cpa_post_task_refresh_enabled</em>（可单独开；无 auth 时 SSO 兜底）</span>
                 </label>
                 <label class="checkbox-field">
-                  <input name="cpa_post_task_refresh_enabled" type="checkbox">
-                  <span>任务完成后批量续期 <em>cpa_post_task_refresh_enabled</em>（在批量 OAuth 之后）</span>
+                  <input name="cpa_post_task_oauth_enabled" type="checkbox">
+                  <span>任务完成后批量 OAuth <em>cpa_post_task_oauth_enabled</em>（可单独开；只 OAuth 不续期也行）</span>
                 </label>
                 <label class="checkbox-field">
                   <input name="cpa_export_enabled" type="checkbox">
@@ -738,6 +738,6 @@
   <script>
     window.__DEFAULTS__ = {{ defaults|safe }};
   </script>
-  <script src="/static/app.js?v=1784361877" charset="utf-8"></script>
+  <script src="/static/app.js?v=1784362576" charset="utf-8"></script>
 </body>
 </html>

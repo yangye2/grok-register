@@ -171,10 +171,10 @@
       settingsFormEl.elements.cpa_probe_required.checked = Boolean(defaults.cpa_probe_required);
     }
     if (settingsFormEl.elements.cpa_post_task_oauth_enabled) {
-      settingsFormEl.elements.cpa_post_task_oauth_enabled.checked = defaults.cpa_post_task_oauth_enabled !== false;
+      settingsFormEl.elements.cpa_post_task_oauth_enabled.checked = Boolean(defaults.cpa_post_task_oauth_enabled);
     }
     if (settingsFormEl.elements.cpa_post_task_refresh_enabled) {
-      settingsFormEl.elements.cpa_post_task_refresh_enabled.checked = Boolean(defaults.cpa_post_task_refresh_enabled);
+      settingsFormEl.elements.cpa_post_task_refresh_enabled.checked = defaults.cpa_post_task_refresh_enabled !== false;
     }
     settingsFormEl.elements.cpa_export_enabled.checked = Boolean(defaults.cpa_export_enabled);
     settingsFormEl.elements.cpa_copy_to_hotload.checked = Boolean(defaults.cpa_copy_to_hotload);

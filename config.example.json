@@ -79,6 +79,6 @@
   "cpa_probe_required": false,
   "cpa_register_push_enabled": false,
   "sub2api_register_push_enabled": false,
-  "cpa_post_task_oauth_enabled": true,
-  "cpa_post_task_refresh_enabled": false
+  "cpa_post_task_oauth_enabled": false,
+  "cpa_post_task_refresh_enabled": true
 }
