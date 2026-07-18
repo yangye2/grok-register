@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Grok Register Console</title>
-  <link rel="stylesheet" href="/static/app.css?v=1784361456">
+  <link rel="stylesheet" href="/static/app.css?v=1784361877">
 </head>
 <body>
   <div class="shell">
@@ -445,8 +445,16 @@
               <summary>注册授权与测活</summary>
               <div class="settings-grid">
                 <label class="checkbox-field">
-                  <input name="cpa_export_enabled" type="checkbox" checked>
-                  <span>启用注册后 OAuth/写授权文件 <em>cpa_export_enabled</em>（不含远程推送；不影响账号管理手动 OAuth）</span>
+                  <input name="cpa_post_task_oauth_enabled" type="checkbox" checked>
+                  <span>任务全部完成后批量 OAuth <em>cpa_post_task_oauth_enabled</em>（推荐；避免每注册一个就授权）</span>
+                </label>
+                <label class="checkbox-field">
+                  <input name="cpa_post_task_refresh_enabled" type="checkbox">
+                  <span>任务完成后批量续期 <em>cpa_post_task_refresh_enabled</em>（在批量 OAuth 之后）</span>
+                </label>
+                <label class="checkbox-field">
+                  <input name="cpa_export_enabled" type="checkbox">
+                  <span>每注册成功立即 OAuth <em>cpa_export_enabled</em>（旧模式；与「任务完成后批量」互斥，开启批量时自动关闭）</span>
                 </label>
                 <label class="checkbox-field">
                   <input name="cpa_prefer_sso_oauth" type="checkbox" checked>
@@ -531,7 +539,7 @@
                 </label>
                 <label class="checkbox-field">
                   <input name="cpa_register_push_enabled" type="checkbox">
-                  <span>注册完成后自动推送 CPA <em>cpa_register_push_enabled</em></span>
+                  <span>任务完成后自动推送 CPA <em>cpa_register_push_enabled</em>（在批量 OAuth 之后）</span>
                 </label>
                 <label>
                   <span>CPA 管理地址 <em>cpa_cloud_api_base</em></span>
@@ -561,7 +569,7 @@
                 </label>
                 <label class="checkbox-field">
                   <input name="sub2api_register_push_enabled" type="checkbox">
-                  <span>注册完成后自动推送 Sub2 <em>sub2api_register_push_enabled</em></span>
+                  <span>任务完成后自动推送 Sub2 <em>sub2api_register_push_enabled</em>（在批量 OAuth 之后）</span>
                 </label>
                 <label class="checkbox-field">
                   <input name="sub2api_export_enabled" type="checkbox">
@@ -730,6 +738,6 @@
   <script>
     window.__DEFAULTS__ = {{ defaults|safe }};
   </script>
-  <script src="/static/app.js?v=1784361456" charset="utf-8"></script>
+  <script src="/static/app.js?v=1784361877" charset="utf-8"></script>
 </body>
 </html>

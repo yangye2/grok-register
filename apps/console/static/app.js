@@ -170,6 +170,12 @@
     if (settingsFormEl.elements.cpa_probe_required) {
       settingsFormEl.elements.cpa_probe_required.checked = Boolean(defaults.cpa_probe_required);
     }
+    if (settingsFormEl.elements.cpa_post_task_oauth_enabled) {
+      settingsFormEl.elements.cpa_post_task_oauth_enabled.checked = defaults.cpa_post_task_oauth_enabled !== false;
+    }
+    if (settingsFormEl.elements.cpa_post_task_refresh_enabled) {
+      settingsFormEl.elements.cpa_post_task_refresh_enabled.checked = Boolean(defaults.cpa_post_task_refresh_enabled);
+    }
     settingsFormEl.elements.cpa_export_enabled.checked = Boolean(defaults.cpa_export_enabled);
     settingsFormEl.elements.cpa_copy_to_hotload.checked = Boolean(defaults.cpa_copy_to_hotload);
     settingsFormEl.elements.cpa_headless.checked = Boolean(defaults.cpa_headless);
@@ -1762,6 +1768,8 @@ accountsDownloadBtnEl.addEventListener("click", async () => {
       cpa_probe_after_write: settingsFormEl.elements.cpa_probe_after_write ? Boolean(settingsFormEl.elements.cpa_probe_after_write.checked) : true,
       cpa_probe_delay_sec: Number(settingsFormEl.elements.cpa_probe_delay_sec?.value ?? 5),
       cpa_probe_required: settingsFormEl.elements.cpa_probe_required ? Boolean(settingsFormEl.elements.cpa_probe_required.checked) : false,
+      cpa_post_task_oauth_enabled: Boolean(settingsFormEl.elements.cpa_post_task_oauth_enabled?.checked),
+      cpa_post_task_refresh_enabled: Boolean(settingsFormEl.elements.cpa_post_task_refresh_enabled?.checked),
       cpa_export_enabled: settingsFormEl.elements.cpa_export_enabled.checked,
       cpa_copy_to_hotload: settingsFormEl.elements.cpa_copy_to_hotload.checked,
       cpa_headless: settingsFormEl.elements.cpa_headless.checked,

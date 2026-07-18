@@ -46,6 +46,15 @@ def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
             log_lines.append(msg)
         print(message, flush=True)
 
+    # 任务结束后再统一 OAuth：注册阶段跳过
+    if bool(config.get("cpa_post_task_oauth_enabled", False)):
+        log("[cpa] post-task OAuth mode: skip per-account OAuth during register")
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "post_task_oauth",
+            "log_lines": list(log_lines),
+        }
     if not bool(config.get("cpa_export_enabled", False)):
         return {"ok": False, "skipped": True, "reason": "disabled", "log_lines": list(log_lines)}
 

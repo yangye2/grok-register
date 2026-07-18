@@ -336,6 +336,8 @@ def load_source_defaults() -> dict[str, Any]:
 
     bool_env_map = {
         "cpa_export_enabled": "GROK_REGISTER_DEFAULT_CPA_EXPORT_ENABLED",
+        "cpa_post_task_oauth_enabled": "CPA_POST_TASK_OAUTH_ENABLED",
+        "cpa_post_task_refresh_enabled": "CPA_POST_TASK_REFRESH_ENABLED",
         "cpa_copy_to_hotload": "GROK_REGISTER_DEFAULT_CPA_COPY_TO_HOTLOAD",
         "cpa_headless": "GROK_REGISTER_DEFAULT_CPA_HEADLESS",
         "cpa_cloud_upload_enabled": "CPA_CLOUD_UPLOAD_ENABLED",
@@ -961,7 +963,9 @@ class SystemSettings(BaseModel):
     outmail_used_file: str = "outmail_used_mailboxes.txt"
     domain_auth_fail_threshold: int = Field(default=3, ge=1, le=100)
     domain_auth_fail_auto_remove: bool = True
-    cpa_export_enabled: bool = True
+    cpa_export_enabled: bool = False
+    cpa_post_task_oauth_enabled: bool = True
+    cpa_post_task_refresh_enabled: bool = False
     cpa_auth_dir: str = "./cpa_auths"
     cpa_copy_to_hotload: bool = False
     cpa_hotload_dir: str = ""
@@ -1132,7 +1136,7 @@ def merged_defaults() -> dict[str, Any]:
     for key in ("domain_auth_fail_threshold", "domain_auth_fail_auto_remove"):
         if key in saved:
             base[key] = saved[key]
-    for key in ("cpa_export_enabled", "cpa_auth_dir", "cpa_copy_to_hotload", "cpa_hotload_dir",
+    for key in ("cpa_export_enabled", "cpa_post_task_oauth_enabled", "cpa_post_task_refresh_enabled", "cpa_auth_dir", "cpa_copy_to_hotload", "cpa_hotload_dir",
                 "cpa_proxy", "cpa_headless", "cpa_mint_timeout_sec", "cpa_cloud_upload_enabled", "cpa_register_push_enabled",
                 "cpa_cloud_api_base", "cpa_cloud_management_key", "cpa_cloud_upload_timeout",
                 "cpa_cloud_upload_retries", "cpa_batch_retry_count", "cpa_mint_browser_recycle_every",
@@ -1152,6 +1156,20 @@ def merged_defaults() -> dict[str, Any]:
     base["cpa_mint_browser_recycle_every"] = _as_nonneg_int(
         base.get("cpa_mint_browser_recycle_every"), 15, maximum=200
     )
+
+    if "cpa_post_task_oauth_enabled" not in base:
+        # 默认：任务结束后再批量 OAuth（避免每注册一个就 OAuth）
+        base["cpa_post_task_oauth_enabled"] = True
+    else:
+        base["cpa_post_task_oauth_enabled"] = bool(base.get("cpa_post_task_oauth_enabled"))
+    if "cpa_post_task_refresh_enabled" not in base:
+        base["cpa_post_task_refresh_enabled"] = False
+    else:
+        base["cpa_post_task_refresh_enabled"] = bool(base.get("cpa_post_task_refresh_enabled"))
+    # 若开启任务后 OAuth，则关闭注册中即时 OAuth，避免重复
+    if base.get("cpa_post_task_oauth_enabled"):
+        base["cpa_export_enabled"] = False
+
     if "cpa_health_check_before_upload" not in base:
         base["cpa_health_check_before_upload"] = True
     else:
@@ -1265,7 +1283,19 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
         "outmail_anonymous_delete_after": bool(defaults.get("outmail_anonymous_delete_after", False)),
         "outmail_exclude_used": bool(defaults.get("outmail_exclude_used", True)),
         "outmail_used_file": str(defaults.get("outmail_used_file") or "outmail_used_mailboxes.txt"),
-        "cpa_export_enabled": defaults.get("cpa_export_enabled", True) if payload.cpa_export_enabled is None else payload.cpa_export_enabled,
+        "cpa_export_enabled": (
+            False
+            if bool(defaults.get("cpa_post_task_oauth_enabled", True))
+            else (
+                defaults.get("cpa_export_enabled", True)
+                if payload.cpa_export_enabled is None
+                else payload.cpa_export_enabled
+            )
+        ),
+        "cpa_post_task_oauth_enabled": bool(defaults.get("cpa_post_task_oauth_enabled", True)),
+        "cpa_post_task_refresh_enabled": bool(defaults.get("cpa_post_task_refresh_enabled", False)),
+        "cpa_post_task_push_cpa": bool(defaults.get("cpa_register_push_enabled", False)),
+        "cpa_post_task_push_sub2": bool(defaults.get("sub2api_register_push_enabled", False)),
         "cpa_prefer_sso_oauth": bool(defaults.get("cpa_prefer_sso_oauth", True)),
         "cpa_probe_after_write": bool(defaults.get("cpa_probe_after_write", True)),
         "cpa_probe_delay_sec": float(defaults.get("cpa_probe_delay_sec", 5) or 5),
@@ -2354,6 +2384,47 @@ def _process_one_cpa_job(account_id: int, mode: str) -> tuple[bool, str, str]:
         ok = bool(result.get("ok"))
         latest = fetch_one("SELECT cpa_status FROM accounts WHERE id = ?", (account_id,))
         status = str(row_get(latest, "cpa_status", "failed") or ("generated" if ok else "failed"))
+    elif mode == "post_task_pipeline":
+        # 任务结束后流水线：OAuth -> 可选续期 -> 可选推送 CPA/Sub2
+        ok = True
+        errors: list[str] = []
+        row = account_row(account_id)
+        try:
+            task_cfg = {}
+            tr = fetch_one("SELECT config_json FROM tasks WHERE id = ?", (int(row_get(row, "task_id", 0) or 0),))
+            if tr is not None:
+                task_cfg = json.loads(row_get(tr, "config_json", "{}") or "{}") or {}
+        except Exception:
+            task_cfg = {}
+        do_oauth = bool(task_cfg.get("cpa_post_task_oauth_enabled", True))
+        do_refresh = bool(task_cfg.get("cpa_post_task_refresh_enabled", False))
+        do_push_cpa = bool(task_cfg.get("cpa_post_task_push_cpa", task_cfg.get("cpa_register_push_enabled", False)))
+        do_push_sub2 = bool(task_cfg.get("cpa_post_task_push_sub2", task_cfg.get("sub2api_register_push_enabled", False)))
+
+        if do_oauth:
+            r1 = run_account_sso_oauth(account_id, manage_job=False)
+            if not r1.get("ok"):
+                ok = False
+                errors.append(str(r1.get("error") or "oauth_failed"))
+        if ok and do_refresh:
+            r2 = run_account_token_refresh(account_id, force=True, allow_sso_fallback=True)
+            if not r2.get("ok"):
+                # 续期失败不阻断已 OAuth 的推送，但记错误
+                errors.append(str(r2.get("error") or "refresh_failed"))
+        if ok and do_push_cpa:
+            r3 = run_account_cpa_upload(account_id, manage_job=False)
+            if not r3:
+                errors.append("cpa_push_failed")
+                ok = False
+        if ok and do_push_sub2:
+            r4 = run_account_sub2api_upload(account_id, manage_job=False)
+            if not r4:
+                errors.append("sub2_push_failed")
+                ok = False
+        latest = fetch_one("SELECT cpa_status, sub2_status FROM accounts WHERE id = ?", (account_id,))
+        status = str(row_get(latest, "cpa_status", "generated") or "generated")
+        if errors:
+            append_account_cpa_log(account_id, "post_task_pipeline: " + "; ".join(errors))
     elif mode == "probe_only":
         result = run_account_token_probe(account_id, probe_api=True, probe_sso=True, auto_refresh=False)
         ok = bool(result.get("ok") or result.get("alive"))
@@ -3014,6 +3085,66 @@ def run_account_sso_oauth(
 
 
 
+
+def schedule_post_task_account_maintain(task_id: int) -> dict[str, Any]:
+    """After register task finishes: batch OAuth (+ optional refresh/push) for task accounts.
+
+    Avoids doing OAuth immediately after each successful registration.
+    """
+    row = task_row(task_id)
+    try:
+        cfg = json.loads(row["config_json"] or "{}")
+    except Exception:
+        cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+
+    post_oauth = bool(cfg.get("cpa_post_task_oauth_enabled", False))
+    post_refresh = bool(cfg.get("cpa_post_task_refresh_enabled", False))
+    post_push_cpa = bool(cfg.get("cpa_post_task_push_cpa", cfg.get("cpa_register_push_enabled", False)))
+    post_push_sub2 = bool(cfg.get("cpa_post_task_push_sub2", cfg.get("sub2api_register_push_enabled", False)))
+
+    if not (post_oauth or post_refresh or post_push_cpa or post_push_sub2):
+        return {"ok": True, "skipped": True, "reason": "post_task_maintain_disabled", "task_id": task_id}
+
+    sync_account_records_for_task(row)
+    rows = fetch_all(
+        "SELECT id, email, sso, cpa_path FROM accounts WHERE task_id = ? ORDER BY id ASC",
+        (task_id,),
+    )
+    account_ids = [int(r["id"]) for r in rows or []]
+    if not account_ids:
+        print(f"[post-task] task={task_id} no accounts to maintain", flush=True)
+        return {"ok": True, "skipped": True, "reason": "no_accounts", "task_id": task_id}
+
+    # Choose a sequential pipeline mode so each account finishes OAuth before next
+    if post_oauth and (post_refresh or post_push_cpa or post_push_sub2):
+        mode = "post_task_pipeline"
+    elif post_oauth:
+        mode = "oauth_only"
+    elif post_refresh:
+        mode = "refresh_only"
+    elif post_push_cpa:
+        mode = "push_only"
+    else:
+        mode = "push_sub2api"
+
+    print(
+        f"[post-task] task={task_id} enqueue {len(account_ids)} accounts mode={mode} "
+        f"oauth={post_oauth} refresh={post_refresh} push_cpa={post_push_cpa} push_sub2={post_push_sub2}",
+        flush=True,
+    )
+    # stash per-account pipeline flags in queue items via mode post_task_pipeline
+    result = enqueue_cpa_jobs(account_ids, mode)
+    for aid in account_ids:
+        append_account_cpa_log(
+            aid,
+            f"任务结束后入队维护 mode={mode} (oauth={post_oauth}, refresh={post_refresh}, "
+            f"push_cpa={post_push_cpa}, push_sub2={post_push_sub2})",
+        )
+    return {"ok": True, "task_id": task_id, "mode": mode, "account_ids": account_ids, "queue": result}
+
+
 def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
     """Validate and enqueue accounts into the global sequential CPA queue."""
     mode = str(mode or "authorize_and_push").strip()
@@ -3024,11 +3155,12 @@ def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
         "probe_only",
         "refresh_only",
         "oauth_only",
+        "post_task_pipeline",
     }
     if mode not in allowed_modes:
         raise HTTPException(
             status_code=400,
-            detail="mode 仅支持 authorize_and_push / push_only / push_sub2api / probe_only / refresh_only / oauth_only",
+            detail="mode 仅支持 authorize_and_push / push_only / push_sub2api / probe_only / refresh_only / oauth_only / post_task_pipeline",
         )
 
     cloud_error = _validate_cpa_cloud_config(mode)
@@ -3606,6 +3738,14 @@ class TaskSupervisor:
             managed = self._processes.pop(task_id, None)
             if managed and managed.log_handle:
                 managed.log_handle.close()
+            # 任务结束后统一维护（批量 OAuth/续期/推送），避免注册一个就 OAuth 一个
+            try:
+                row_done = fetch_one("SELECT status FROM tasks WHERE id = ?", (task_id,))
+                st = str(row_get(row_done, "status", "") or "")
+                if st in {STATUS_COMPLETED, STATUS_PARTIAL}:
+                    schedule_post_task_account_maintain(task_id)
+            except Exception as post_exc:  # noqa: BLE001
+                print(f"[post-task] task={task_id} maintain schedule failed: {post_exc}", flush=True)
 
 
 supervisor = TaskSupervisor()
