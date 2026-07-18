@@ -11,6 +11,7 @@
     accountTaskFilter: "all",
     accountCpaFilter: "all",
     accountTokenFilter: "all",
+    accountSub2Filter: "all",
     accountSsoFilter: "all",
     accountPage: 1,
     accountPageSize: 20,
@@ -78,6 +79,7 @@
   const accountsTaskFilterEl = document.getElementById("accountsTaskFilter");
   const accountsCpaFilterEl = document.getElementById("accountsCpaFilter");
   const accountsTokenFilterEl = document.getElementById("accountsTokenFilter");
+  const accountsSub2FilterEl = document.getElementById("accountsSub2Filter");
   const accountsSsoFilterEl = document.getElementById("accountsSsoFilter");
   const accountsPageSizeEl = document.getElementById("accountsPageSize");
   const accountsPageMetaEl = document.getElementById("accountsPageMeta");
@@ -531,17 +533,40 @@
   }
 
   function cpaStatusLabel(status) {
+    // uploaded 显示 "CPA"：表示已推送到远程 CPA
     return ({
       not_started: "未授权",
       queued: "排队中",
       running: "授权中",
       uploading: "推送中",
       generated: "已生成",
-      uploaded: "已推送",
+      uploaded: "CPA",
       invalid: "测活失败",
       failed: "失败",
       cancelled: "已取消",
     }[status] || status || "未授权");
+  }
+
+  function sub2StatusLabel(status) {
+    // uploaded 显示 "Sub2"：表示已推送到 Sub2API
+    return ({
+      not_started: "-",
+      queued: "排队中",
+      running: "推送中",
+      uploading: "推送中",
+      uploaded: "Sub2",
+      failed: "失败",
+      invalid: "失败",
+      cancelled: "已取消",
+    }[status] || status || "-");
+  }
+
+  function sub2StatusTone(status) {
+    const s = String(status || "not_started");
+    if (s === "uploaded") return "tone-ok";
+    if (s === "queued" || s === "running" || s === "uploading") return "tone-info";
+    if (s === "failed" || s === "invalid") return "tone-bad";
+    return "tone-mute";
   }
 
   
@@ -560,6 +585,9 @@
     }
     if (state.accountTokenFilter && state.accountTokenFilter !== "all") {
       params.set("token_status", state.accountTokenFilter);
+    }
+    if (state.accountSub2Filter && state.accountSub2Filter !== "all") {
+      params.set("sub2_status", state.accountSub2Filter);
     }
     if (state.accountSsoFilter && state.accountSsoFilter !== "all") {
       params.set("sso_alive", state.accountSsoFilter);
@@ -651,7 +679,8 @@
   }
 
 function isCpaBusy(account) {
-    return ["running", "uploading", "queued"].includes(account.cpa_status);
+    const busy = ["running", "uploading", "queued"];
+    return busy.includes(account.cpa_status) || busy.includes(account.sub2_status);
   }
 
   function canPushExistingCpa(account) {
@@ -710,14 +739,15 @@ function isCpaBusy(account) {
         <td class="account-password account-copyable" data-copy="${escapeHtml(account.password || "")}" title="点击复制密码">${escapeHtml(account.password || "-")}</td>
         <td class="account-sso account-copyable" data-copy="${escapeHtml(account.sso || "")}" title="点击复制 SSO: ${escapeHtml(account.sso || "")}">${escapeHtml(shortSso(account.sso))}</td>
         <td>${escapeHtml(account.created_at || "-")}</td>
-        <td class="account-cpa-status">${statusPill(cpaStatusLabel(account.cpa_status), cpaStatusTone(account.cpa_status), account.cpa_error || account.cpa_path || "")}</td>
-        <td class="account-token-status">${statusPill(tokenStatusLabel(account.token_status), tokenStatusTone(account.token_status), account.token_error || account.last_renew_source || "")}</td>
         <td class="account-sso-alive">${statusPill(ssoAliveLabel(account.sso_alive), ssoAliveTone(account.sso_alive), "")}</td>
+        <td class="account-token-status">${statusPill(tokenStatusLabel(account.token_status), tokenStatusTone(account.token_status), account.token_error || account.last_renew_source || "")}</td>
+        <td class="account-cpa-status">${statusPill(cpaStatusLabel(account.cpa_status), cpaStatusTone(account.cpa_status), account.cpa_error || account.cpa_path || "")}</td>
+        <td class="account-sub2-status">${statusPill(sub2StatusLabel(account.sub2_status), sub2StatusTone(account.sub2_status), account.sub2_error || account.sub2_uploaded_at || "")}</td>
         <td title="${escapeHtml(account.token_checked_at || "")}">${escapeHtml(account.token_expires_at || "-")}</td>
         <td class="account-actions">
-          <button class="button button-small button-info" type="button" data-oauth-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>OAuth</button>
-          <button class="button button-small button-warn" type="button" data-refresh-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>续期</button>
-          <button class="button button-small button-success" type="button" data-probe-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""}>测活</button>
+          <button class="button button-small button-warn" type="button" data-refresh-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""} title="优先 RT 续期">续期</button>
+          <button class="button button-small button-success" type="button" data-probe-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""} title="检测是否可用">测活</button>
+          <button class="button button-small button-info" type="button" data-oauth-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""} title="完整 SSO OAuth 重建">OAuth</button>
           <button class="button button-danger button-small" type="button" data-delete-account-id="${account.id}">删除</button>
         </td>
       </tr>
@@ -924,9 +954,12 @@ function isCpaBusy(account) {
     accountCpaLogTitleEl.textContent = `账号日志 · ${account.email || `#${account.id}`}`;
     const lines = [];
     lines.push(`邮箱: ${account.email || "-"}`);
-    lines.push(`CPA: ${cpaStatusLabel(account.cpa_status)}`);
-    lines.push(`Token: ${tokenStatusLabel(account.token_status)}`);
     lines.push(`SSO测活: ${ssoAliveLabel(account.sso_alive)}`);
+    lines.push(`Token: ${tokenStatusLabel(account.token_status)}`);
+    lines.push(`CPA: ${cpaStatusLabel(account.cpa_status)}`);
+    lines.push(`Sub2: ${sub2StatusLabel(account.sub2_status)}`);
+    if (account.sub2_error) lines.push(`Sub2错误: ${account.sub2_error}`);
+    if (account.sub2_uploaded_at) lines.push(`Sub2推送时间: ${account.sub2_uploaded_at}`);
     if (account.cpa_path) lines.push(`文件: ${account.cpa_path}`);
     if (account.token_expires_at) lines.push(`过期: ${account.token_expires_at}`);
     if (account.token_checked_at) lines.push(`检测时间: ${account.token_checked_at}`);
@@ -942,7 +975,7 @@ function isCpaBusy(account) {
       lines.push("");
       lines.push("---- 详细日志 ----");
       lines.push("暂无详细日志。");
-      lines.push("对本账号执行 OAuth / 测活 / 续期 / 推送后，过程会写到这里。");
+      lines.push("对本账号执行 续期 / 测活 / OAuth / 推送后，过程会写到这里。");
       lines.push("注册浏览器步骤仍在「注册任务」控制台；注册后的 OAuth/测活会同步到本日志。");
     }
     accountCpaLogEl.textContent = lines.join("\n") || "暂无日志";
@@ -1622,6 +1655,13 @@ accountsDownloadBtnEl.addEventListener("click", async () => {
   if (accountsTokenFilterEl) {
     accountsTokenFilterEl.addEventListener("change", () => {
       state.accountTokenFilter = accountsTokenFilterEl.value;
+      state.accountPage = 1;
+      refreshAccounts();
+    });
+  }
+  if (accountsSub2FilterEl) {
+    accountsSub2FilterEl.addEventListener("change", () => {
+      state.accountSub2Filter = accountsSub2FilterEl.value;
       state.accountPage = 1;
       refreshAccounts();
     });

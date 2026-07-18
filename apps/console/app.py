@@ -242,6 +242,10 @@ def init_db() -> None:
             ("cpa_error", "TEXT"),
             ("cpa_log", "TEXT"),
             ("cpa_updated_at", "TEXT"),
+            ("sub2_status", "TEXT NOT NULL DEFAULT 'not_started'"),
+            ("sub2_uploaded_at", "TEXT"),
+            ("sub2_error", "TEXT"),
+            ("sub2_updated_at", "TEXT"),
             ("token_status", "TEXT NOT NULL DEFAULT 'unknown'"),
             ("token_expires_at", "TEXT"),
             ("token_checked_at", "TEXT"),
@@ -1500,6 +1504,10 @@ def serialize_account(row: sqlite3.Row) -> dict[str, Any]:
         "cpa_error": row_get(row, "cpa_error", "") or "",
         "cpa_log": row_get(row, "cpa_log", "") or "",
         "cpa_updated_at": row_get(row, "cpa_updated_at", "") or "",
+        "sub2_status": row_get(row, "sub2_status", "not_started") or "not_started",
+        "sub2_uploaded_at": row_get(row, "sub2_uploaded_at", "") or "",
+        "sub2_error": row_get(row, "sub2_error", "") or "",
+        "sub2_updated_at": row_get(row, "sub2_updated_at", "") or "",
         "token_status": row_get(row, "token_status", "unknown") or "unknown",
         "token_expires_at": row_get(row, "token_expires_at", "") or "",
         "token_checked_at": row_get(row, "token_checked_at", "") or "",
@@ -1823,39 +1831,69 @@ def run_account_cpa_export(account_id: int, *, manage_job: bool = True) -> bool:
             errors.append(err)
             account_log(err)
 
-        remote_uploaded = bool(
-            cloud.get("ok")
-            or (sub2.get("ok") and sub2_upload_enabled and not sub2.get("skipped_upload"))
-        )
-        if remote_uploaded:
-            status = "uploaded"
-            ok = not errors
-        elif not cloud_enabled and not sub2_upload_enabled:
-            status = "generated"
+        cloud_ok = bool(cloud.get("ok"))
+        sub2_ok = bool(sub2.get("ok") and sub2_upload_enabled and not sub2.get("skipped_upload") and not sub2.get("skipped"))
+        if cloud_ok:
+            cpa_status_final = "uploaded"
+        else:
+            cpa_status_final = "generated"
+        if not cloud_enabled and not sub2_upload_enabled:
             ok = True
         else:
-            status = "generated"
-            ok = not errors
+            ok = not errors and (cloud_ok or sub2_ok or (not cloud_enabled and not sub2_upload_enabled))
+            if errors and not cloud_ok and not sub2_ok:
+                ok = False
+            elif not errors:
+                ok = True
+            else:
+                # partial remote success still counts as overall ok if auth file exists
+                ok = True
 
         cloud_error = "; ".join(errors)
-        uploaded_at = now_iso() if status == "uploaded" else ""
+        uploaded_at = now_iso() if cloud_ok else ""
+        now = now_iso()
 
         execute_no_return(
             """
             UPDATE accounts
-            SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = ?, cpa_updated_at = ?
+            SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = CASE WHEN ? != '' THEN ? ELSE cpa_uploaded_at END,
+                cpa_error = ?, cpa_updated_at = ?,
+                sub2_status = CASE
+                    WHEN ? THEN 'uploaded'
+                    WHEN ? AND sub2_status NOT IN ('uploaded') THEN 'failed'
+                    ELSE sub2_status
+                END,
+                sub2_uploaded_at = CASE WHEN ? THEN ? ELSE sub2_uploaded_at END,
+                sub2_error = CASE
+                    WHEN ? THEN ''
+                    WHEN ? THEN ?
+                    ELSE sub2_error
+                END,
+                sub2_updated_at = CASE WHEN ? OR ? THEN ? ELSE sub2_updated_at END
             WHERE id = ?
             """,
             (
-                status,
+                cpa_status_final,
                 cpa_path_value,
                 uploaded_at,
-                cloud_error,
-                now_iso(),
+                uploaded_at,
+                cloud_error if not cloud_ok else "",
+                now,
+                1 if sub2_ok else 0,
+                1 if (sub2_enabled and not sub2_ok and not sub2.get("skipped")) else 0,
+                1 if sub2_ok else 0,
+                now,
+                1 if sub2_ok else 0,
+                1 if (sub2_enabled and not sub2_ok and not sub2.get("skipped")) else 0,
+                (str(sub2.get("error") or result.get("sub2api_error") or "sub2 push failed")[:500]
+                 if (sub2_enabled and not sub2_ok and not sub2.get("skipped")) else ""),
+                1 if sub2_ok else 0,
+                1 if (sub2_enabled and not sub2_ok and not sub2.get("skipped")) else 0,
+                now,
                 account_id,
             ),
         )
-        if status == "uploaded" and not errors:
+        if cloud_ok or sub2_ok:
             try:
                 record_domain_auth_success(email, log=account_log)
             except Exception as domain_exc:  # noqa: BLE001
@@ -1892,6 +1930,10 @@ def run_account_cpa_upload(account_id: int, *, manage_job: bool = True) -> bool:
             raise ValueError("未找到已生成的 CPA 授权文件，请先生成授权")
 
         account_log(f"开始推送 CPA 授权文件: {cpa_path.name}")
+        execute_no_return(
+            "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
+            ("uploading", now_iso(), account_id),
+        )
         cpa_export = load_cpa_export_module()
         account_cpa_config = build_account_cpa_config(force_cloud_upload=True)
 
@@ -2000,6 +2042,10 @@ def run_account_sub2api_upload(account_id: int, *, manage_job: bool = True) -> b
             raise ValueError("未找到已生成的 CPA 授权文件，请先生成授权")
 
         account_log(f"开始推送 Sub2API: {cpa_path.name}")
+        execute_no_return(
+            "UPDATE accounts SET sub2_status = ?, sub2_error = '', sub2_updated_at = ? WHERE id = ?",
+            ("uploading", now_iso(), account_id),
+        )
         cpa_export = load_cpa_export_module()
         account_cpa_config = build_account_cpa_config(force_cloud_upload=False)
         account_cpa_config["sub2api_upload_enabled"] = True
@@ -2014,10 +2060,13 @@ def run_account_sub2api_upload(account_id: int, *, manage_job: bool = True) -> b
                 execute_no_return(
                     """
                     UPDATE accounts
-                    SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = ?, cpa_updated_at = ?
+                    SET sub2_status = ?, sub2_error = ?, sub2_updated_at = ?,
+                        cpa_status = CASE WHEN cpa_status IN ('uploaded','generated') THEN cpa_status ELSE 'invalid' END,
+                        cpa_path = COALESCE(NULLIF(cpa_path, ''), ?),
+                        cpa_error = ?, cpa_updated_at = ?
                     WHERE id = ?
                     """,
-                    ("invalid", str(cpa_path), "", error, now_iso(), account_id),
+                    ("failed", error[:500], now_iso(), str(cpa_path), error[:500], now_iso(), account_id),
                 )
                 try:
                     record_domain_auth_failure(email, error, log=account_log)
@@ -2035,13 +2084,15 @@ def run_account_sub2api_upload(account_id: int, *, manage_job: bool = True) -> b
         result = sub_mod.upload_cpa_auth_to_sub2api(cpa_path, account_cpa_config, account_log)
         if result.get("ok"):
             account_log(f"Sub2API 推送成功: {result.get('message') or cpa_path.name}")
+            # Sub2 状态独立；不改写 cpa_status（CPA 推送仍显示 CPA）
             execute_no_return(
                 """
                 UPDATE accounts
-                SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = ?, cpa_updated_at = ?
+                SET sub2_status = ?, sub2_uploaded_at = ?, sub2_error = '', sub2_updated_at = ?,
+                    cpa_path = COALESCE(NULLIF(cpa_path, ''), ?), cpa_updated_at = ?
                 WHERE id = ?
                 """,
-                ("uploaded", str(cpa_path), now_iso(), "", now_iso(), account_id),
+                ("uploaded", now_iso(), now_iso(), str(cpa_path), now_iso(), account_id),
             )
             try:
                 record_domain_auth_success(email, log=account_log)
@@ -2058,24 +2109,28 @@ def run_account_sub2api_upload(account_id: int, *, manage_job: bool = True) -> b
         execute_no_return(
             """
             UPDATE accounts
-            SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = ?, cpa_updated_at = ?
+            SET sub2_status = ?, sub2_error = ?, sub2_updated_at = ?,
+                cpa_path = COALESCE(NULLIF(cpa_path, ''), ?), cpa_updated_at = ?
             WHERE id = ?
             """,
             (
-                "generated",
+                "failed",
+                error[:500],
+                now_iso(),
                 str(cpa_path),
-                str(row_get(row, "cpa_uploaded_at", "") or ""),
-                error,
                 now_iso(),
                 account_id,
             ),
         )
     except Exception as exc:
         append_account_cpa_log(account_id, f"Sub2API 推送失败: {exc}")
-        status = "generated" if cpa_path is not None else "failed"
         execute_no_return(
-            "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
-            (status, str(exc), now_iso(), account_id),
+            """
+            UPDATE accounts
+            SET sub2_status = ?, sub2_error = ?, sub2_updated_at = ?, cpa_updated_at = ?
+            WHERE id = ?
+            """,
+            ("failed", str(exc)[:500], now_iso(), now_iso(), account_id),
         )
         ok = False
     finally:
@@ -2240,7 +2295,10 @@ def _process_one_cpa_job(account_id: int, mode: str) -> tuple[bool, str, str]:
         status = "uploaded" if ok else "failed"
     elif mode == "push_sub2api":
         ok = run_account_sub2api_upload(account_id, manage_job=False)
-        status = "uploaded" if ok else "failed"
+        latest = fetch_one("SELECT sub2_status, sub2_error FROM accounts WHERE id = ?", (account_id,))
+        status = str(row_get(latest, "sub2_status", "uploaded" if ok else "failed") or ("uploaded" if ok else "failed"))
+        if not ok and status not in {"failed", "invalid"}:
+            status = "failed"
     elif mode == "oauth_only":
         result = run_account_sso_oauth(account_id, manage_job=False)
         ok = bool(result.get("ok"))
@@ -2321,20 +2379,34 @@ def cpa_worker_loop() -> None:
                     _record_cpa_result(account_id, email, "cancelled", error or "cancelled")
                     cpa_queue_state["cancelled"] = int(cpa_queue_state.get("cancelled") or 0) + 1
                 elif ok:
-                    row3 = fetch_one("SELECT cpa_status, cpa_error FROM accounts WHERE id = ?", (account_id,))
-                    status = str(row_get(row3, "cpa_status", "generated") or "generated") if row3 else "generated"
-                    err = str(row_get(row3, "cpa_error", "") or "") if row3 else ""
-                    if status in {"queued", "running", "uploading"}:
-                        status = "generated" if mode in {"probe_only", "refresh_only", "oauth_only"} else status
+                    if mode == "push_sub2api":
+                        row3 = fetch_one("SELECT sub2_status, sub2_error FROM accounts WHERE id = ?", (account_id,))
+                        status = str(row_get(row3, "sub2_status", "uploaded") or "uploaded") if row3 else "uploaded"
+                        err = str(row_get(row3, "sub2_error", "") or "") if row3 else ""
                         if status in {"queued", "running", "uploading"}:
-                            status = "generated"
-                        try:
-                            execute_no_return(
-                                "UPDATE accounts SET cpa_status = ?, cpa_updated_at = ? WHERE id = ?",
-                                (status, now_iso(), account_id),
-                            )
-                        except Exception:
-                            pass
+                            status = "uploaded"
+                            try:
+                                execute_no_return(
+                                    "UPDATE accounts SET sub2_status = ?, sub2_updated_at = ? WHERE id = ?",
+                                    (status, now_iso(), account_id),
+                                )
+                            except Exception:
+                                pass
+                    else:
+                        row3 = fetch_one("SELECT cpa_status, cpa_error FROM accounts WHERE id = ?", (account_id,))
+                        status = str(row_get(row3, "cpa_status", "generated") or "generated") if row3 else "generated"
+                        err = str(row_get(row3, "cpa_error", "") or "") if row3 else ""
+                        if status in {"queued", "running", "uploading"}:
+                            status = "generated" if mode in {"probe_only", "refresh_only", "oauth_only"} else status
+                            if status in {"queued", "running", "uploading"}:
+                                status = "generated"
+                            try:
+                                execute_no_return(
+                                    "UPDATE accounts SET cpa_status = ?, cpa_updated_at = ? WHERE id = ?",
+                                    (status, now_iso(), account_id),
+                                )
+                            except Exception:
+                                pass
                     # Defensive: generated+error should not be counted as queue success
                     if status == "generated" and err:
                         _record_cpa_result(account_id, email, status, err)
@@ -2343,21 +2415,35 @@ def cpa_worker_loop() -> None:
                         _record_cpa_result(account_id, email, status, "")
                         cpa_queue_state["success"] = int(cpa_queue_state.get("success") or 0) + 1
                 else:
-                    row3 = fetch_one("SELECT cpa_status, cpa_error FROM accounts WHERE id = ?", (account_id,))
-                    status = str(row_get(row3, "cpa_status", "failed") or "failed") if row3 else "failed"
-                    err = str(row_get(row3, "cpa_error", "") or error or "") if row3 else (error or "")
-                    # Never leave accounts stuck in busy states after a finished job
-                    if status in {"queued", "running", "uploading"}:
-                        status = "invalid" if mode in {"probe_only", "refresh_only", "oauth_only"} else "failed"
-                        try:
-                            execute_no_return(
-                                "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
-                                (status, (err or "queue job finished with busy status")[:500], now_iso(), account_id),
-                            )
-                        except Exception:
-                            pass
-                    if status not in {"invalid", "failed", "generated", "not_started", "uploaded", "cancelled"}:
-                        status = "failed"
+                    if mode == "push_sub2api":
+                        row3 = fetch_one("SELECT sub2_status, sub2_error FROM accounts WHERE id = ?", (account_id,))
+                        status = str(row_get(row3, "sub2_status", "failed") or "failed") if row3 else "failed"
+                        err = str(row_get(row3, "sub2_error", "") or error or "") if row3 else (error or "")
+                        if status in {"queued", "running", "uploading", "not_started"}:
+                            status = "failed"
+                            try:
+                                execute_no_return(
+                                    "UPDATE accounts SET sub2_status = ?, sub2_error = ?, sub2_updated_at = ? WHERE id = ?",
+                                    (status, (err or "sub2 queue job failed")[:500], now_iso(), account_id),
+                                )
+                            except Exception:
+                                pass
+                    else:
+                        row3 = fetch_one("SELECT cpa_status, cpa_error FROM accounts WHERE id = ?", (account_id,))
+                        status = str(row_get(row3, "cpa_status", "failed") or "failed") if row3 else "failed"
+                        err = str(row_get(row3, "cpa_error", "") or error or "") if row3 else (error or "")
+                        # Never leave accounts stuck in busy states after a finished job
+                        if status in {"queued", "running", "uploading"}:
+                            status = "invalid" if mode in {"probe_only", "refresh_only", "oauth_only"} else "failed"
+                            try:
+                                execute_no_return(
+                                    "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
+                                    (status, (err or "queue job finished with busy status")[:500], now_iso(), account_id),
+                                )
+                            except Exception:
+                                pass
+                        if status not in {"invalid", "failed", "generated", "not_started", "uploaded", "cancelled"}:
+                            status = "failed"
                     _record_cpa_result(account_id, email, status, err)
                     cpa_queue_state["failed"] = int(cpa_queue_state.get("failed") or 0) + 1
                 cpa_queue_state["done"] = int(cpa_queue_state.get("done") or 0) + 1
@@ -3005,10 +3091,16 @@ def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
             cpa_queue_state["mode"] = mode
             worker = cpa_worker_thread
             for account_id, email in to_start:
-                execute_no_return(
-                    "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
-                    ("queued", now_iso(), account_id),
-                )
+                if mode == "push_sub2api":
+                    execute_no_return(
+                        "UPDATE accounts SET sub2_status = ?, sub2_error = '', sub2_updated_at = ?, cpa_updated_at = ? WHERE id = ?",
+                        ("queued", now_iso(), now_iso(), account_id),
+                    )
+                else:
+                    execute_no_return(
+                        "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
+                        ("queued", now_iso(), account_id),
+                    )
                 append_account_cpa_log(
                     account_id,
                     f"已加入全局 CPA 队列（mode={mode}，单线程单浏览器）",
@@ -3046,6 +3138,7 @@ def build_accounts_where_clause(
     cpa_status: str | None = None,
     token_status: str | None = None,
     sso_alive: str | None = None,
+    sub2_status: str | None = None,
 ) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
@@ -3082,6 +3175,11 @@ def build_accounts_where_clause(
             clauses.append("sso_alive = 0")
         elif sso in {"unknown", "null", "none", "unset"}:
             clauses.append("sso_alive IS NULL")
+
+    sub2 = (sub2_status or "").strip().lower()
+    if sub2 and sub2 != "all":
+        clauses.append("LOWER(COALESCE(sub2_status, '')) = ?")
+        params.append(sub2)
 
     if not clauses:
         return "", params
@@ -3705,8 +3803,9 @@ def _heal_stale_busy_accounts() -> int:
             if current_id is not None:
                 active_ids.add(int(current_id))
         rows = fetch_all(
-            "SELECT id, cpa_status, cpa_path, token_status FROM accounts "
-            "WHERE cpa_status IN ('queued', 'running', 'uploading')"
+            "SELECT id, cpa_status, sub2_status, cpa_path, token_status FROM accounts "
+            "WHERE cpa_status IN ('queued', 'running', 'uploading') "
+            "   OR sub2_status IN ('queued', 'running', 'uploading')"
         )
         healed = 0
         for row in rows or []:
@@ -3715,28 +3814,44 @@ def _heal_stale_busy_accounts() -> int:
                 continue
             path = str(row_get(row, "cpa_path", "") or "").strip()
             token_status = str(row_get(row, "token_status", "") or "").strip().lower()
-            if token_status in {
-                "dead", "sso_dead", "api_dead", "error",
-                "refresh_failed", "refresh_invalid", "oauth_failed",
-            }:
-                new_status = "invalid"
-            elif path:
-                new_status = "generated"
-            else:
-                new_status = "not_started"
-            execute_no_return(
-                "UPDATE accounts SET cpa_status = ?, cpa_error = CASE "
-                "WHEN ? = 'invalid' AND (cpa_error IS NULL OR cpa_error = '') "
-                "THEN ? ELSE cpa_error END, cpa_updated_at = ? WHERE id = ?",
-                (
-                    new_status,
-                    new_status,
-                    f"auto-heal: stale {row_get(row, 'cpa_status', '')} cleared (token={token_status or 'unknown'})",
-                    now_iso(),
-                    account_id,
-                ),
-            )
-            healed += 1
+            cpa_st = str(row_get(row, "cpa_status", "") or "")
+            sub2_st = str(row_get(row, "sub2_status", "") or "")
+            if cpa_st in {"queued", "running", "uploading"}:
+                if token_status in {
+                    "dead", "sso_dead", "api_dead", "error",
+                    "refresh_failed", "refresh_invalid", "oauth_failed",
+                }:
+                    new_status = "invalid"
+                elif path:
+                    new_status = "generated"
+                else:
+                    new_status = "not_started"
+                execute_no_return(
+                    "UPDATE accounts SET cpa_status = ?, cpa_error = CASE "
+                    "WHEN ? = 'invalid' AND (cpa_error IS NULL OR cpa_error = '') "
+                    "THEN ? ELSE cpa_error END, cpa_updated_at = ? WHERE id = ?",
+                    (
+                        new_status,
+                        new_status,
+                        f"auto-heal: stale cpa {cpa_st} cleared (token={token_status or 'unknown'})",
+                        now_iso(),
+                        account_id,
+                    ),
+                )
+                healed += 1
+            if sub2_st in {"queued", "running", "uploading"}:
+                execute_no_return(
+                    "UPDATE accounts SET sub2_status = ?, sub2_error = CASE "
+                    "WHEN sub2_error IS NULL OR sub2_error = '' THEN ? ELSE sub2_error END, "
+                    "sub2_updated_at = ? WHERE id = ?",
+                    (
+                        "failed",
+                        f"auto-heal: stale sub2 {sub2_st} cleared",
+                        now_iso(),
+                        account_id,
+                    ),
+                )
+                healed += 1
         if healed:
             print(f"[accounts] healed {healed} stale busy cpa_status rows", flush=True)
         return healed
@@ -3752,13 +3867,14 @@ def list_accounts(
     cpa_status: str = Query(""),
     token_status: str = Query(""),
     sso_alive: str = Query(""),
+    sub2_status: str = Query(""),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
 ) -> dict[str, Any]:
     sync_all_account_records()
     _heal_stale_busy_accounts()
     where_clause, where_params = build_accounts_where_clause(
-        task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive
+        task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive, sub2_status=sub2_status
     )
     count_row = fetch_one(
         f"SELECT COUNT(*) AS c FROM accounts{where_clause}",
@@ -3799,11 +3915,12 @@ def list_account_ids(
     cpa_status: str = Query(""),
     token_status: str = Query(""),
     sso_alive: str = Query(""),
+    sub2_status: str = Query(""),
 ) -> dict[str, Any]:
     """Return all account ids matching current filters (for cross-page select-all)."""
     sync_all_account_records()
     where_clause, where_params = build_accounts_where_clause(
-        task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive
+        task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive, sub2_status=sub2_status
     )
     rows = fetch_all(
         f"SELECT id FROM accounts{where_clause} ORDER BY created_at DESC, id DESC",

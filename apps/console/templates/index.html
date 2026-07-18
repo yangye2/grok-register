@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Grok Register Console</title>
-  <link rel="stylesheet" href="/static/app.css?v=1784355784">
+  <link rel="stylesheet" href="/static/app.css?v=1784358439">
 </head>
 <body>
   <div class="shell">
@@ -126,10 +126,10 @@
                 <button id="accountsLogBtn" class="button button-neutral" type="button" disabled title="查看选中账号日志：注册后 OAuth/测活 + 维护操作（同一份 cpa_log）">查看日志</button>
               </div>
               <span class="accounts-toolbar-sep" aria-hidden="true"></span>
-              <div class="accounts-toolbar-group" title="Token 维护">
-                <button id="accountsOauthBatchBtn" class="button button-info" type="button" disabled>批量 OAuth</button>
-                <button id="accountsRefreshTokenBatchBtn" class="button button-warn" type="button" disabled>批量续期</button>
-                <button id="accountsProbeBatchBtn" class="button button-success" type="button" disabled>批量测活</button>
+              <div class="accounts-toolbar-group" title="Token 维护：先续期/测活，失败再 OAuth 重建">
+                <button id="accountsRefreshTokenBatchBtn" class="button button-warn" type="button" disabled title="优先 refresh_token，失败可 SSO 兜底">批量续期</button>
+                <button id="accountsProbeBatchBtn" class="button button-success" type="button" disabled title="检测 token/SSO 是否可用">批量测活</button>
+                <button id="accountsOauthBatchBtn" class="button button-info" type="button" disabled title="完整 SSO OAuth 重建授权（较重，放在最后）">批量 OAuth</button>
               </div>
               <span class="accounts-toolbar-sep" aria-hidden="true"></span>
               <div class="accounts-toolbar-group" title="推送与队列">
@@ -157,17 +157,12 @@
               </select>
             </label>
             <label class="filter-field narrow">
-              <span class="meta-label">CPA 状态</span>
-              <select id="accountsCpaFilter">
+              <span class="meta-label">SSO 测活</span>
+              <select id="accountsSsoFilter">
                 <option value="all">全部</option>
-                <option value="not_started">未授权</option>
-                <option value="queued">排队中</option>
-                <option value="running">授权中</option>
-                <option value="uploading">推送中</option>
-                <option value="generated">已生成</option>
-                <option value="uploaded">已推送</option>
-                <option value="invalid">测活失败</option>
-                <option value="failed">失败</option>
+                <option value="1">存活</option>
+                <option value="0">失效</option>
+                <option value="unknown">未测</option>
               </select>
             </label>
             <label class="filter-field narrow">
@@ -186,12 +181,28 @@
               </select>
             </label>
             <label class="filter-field narrow">
-              <span class="meta-label">SSO 测活</span>
-              <select id="accountsSsoFilter">
+              <span class="meta-label">CPA 状态</span>
+              <select id="accountsCpaFilter">
                 <option value="all">全部</option>
-                <option value="1">存活</option>
-                <option value="0">失效</option>
-                <option value="unknown">未测</option>
+                <option value="not_started">未授权</option>
+                <option value="queued">排队中</option>
+                <option value="running">授权中</option>
+                <option value="uploading">推送中</option>
+                <option value="generated">已生成</option>
+                <option value="uploaded">CPA(已推送)</option>
+                <option value="invalid">测活失败</option>
+                <option value="failed">失败</option>
+              </select>
+            </label>
+            <label class="filter-field narrow">
+              <span class="meta-label">Sub2 状态</span>
+              <select id="accountsSub2Filter">
+                <option value="all">全部</option>
+                <option value="not_started">未推送</option>
+                <option value="queued">排队中</option>
+                <option value="uploading">推送中</option>
+                <option value="uploaded">Sub2(已推送)</option>
+                <option value="failed">失败</option>
               </select>
             </label>
             <label class="filter-field">
@@ -231,9 +242,10 @@
                   <th>密码</th>
                   <th>SSO</th>
                   <th>创建时间</th>
-                  <th>CPA</th>
-                  <th>Token</th>
                   <th>SSO测活</th>
+                  <th>Token</th>
+                  <th>CPA</th>
+                  <th>Sub2</th>
                   <th>过期时间</th>
                   <th>操作</th>
                 </tr>
@@ -710,6 +722,6 @@
   <script>
     window.__DEFAULTS__ = {{ defaults|safe }};
   </script>
-  <script src="/static/app.js?v=1784355784" charset="utf-8"></script>
+  <script src="/static/app.js?v=1784358439" charset="utf-8"></script>
 </body>
 </html>

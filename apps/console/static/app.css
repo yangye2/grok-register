@@ -491,6 +491,8 @@ button {
   overflow-x: hidden;
   overflow-y: auto;
   background: var(--panel-strong);
+  width: 100%;
+  max-width: 100%;
 }
 
 .account-cpa-log-panel {
@@ -523,7 +525,7 @@ button {
 
 .accounts-table th,
 .accounts-table td {
-  padding: 8px 8px;
+  padding: 7px 6px;
   border-bottom: 1px solid var(--line);
   text-align: left;
   font-size: 11px;
@@ -544,63 +546,57 @@ button {
 
 .accounts-table tbody tr:last-child td { border-bottom: 0; }
 
-/* 1 select | 2 email | 3 password | 4 sso | 5 created | 6 CPA | 7 Token | 8 SSO alive | 9 expire | 10 actions */
+/* 1 select | 2 email | 3 password | 4 sso | 5 created | 6 SSO alive | 7 Token | 8 CPA | 9 Sub2 | 10 expire | 11 actions */
 .select-col,
 .accounts-table th:nth-child(1),
 .accounts-table td:nth-child(1) {
-  width: 36px;
-  min-width: 36px;
-  max-width: 36px;
+  width: 32px;
+  min-width: 32px;
+  max-width: 32px;
   text-align: center;
-  padding-left: 6px;
-  padding-right: 6px;
+  padding-left: 4px;
+  padding-right: 4px;
 }
 
 .accounts-table th:nth-child(2),
-.accounts-table td:nth-child(2) { width: 18%; } /* email */
+.accounts-table td:nth-child(2) { width: 14%; } /* email */
 
 .accounts-table th:nth-child(3),
-.accounts-table td:nth-child(3) { width: 10%; } /* password */
+.accounts-table td:nth-child(3) { width: 9%; } /* password */
 
 .accounts-table th:nth-child(4),
-.accounts-table td:nth-child(4) { width: 12%; } /* sso */
+.accounts-table td:nth-child(4) { width: 11%; } /* sso */
 
 .accounts-table th:nth-child(5),
-.accounts-table td:nth-child(5) { width: 11%; } /* created */
+.accounts-table td:nth-child(5) { width: 10%; } /* created */
 
 .accounts-table th:nth-child(6),
-.accounts-table td:nth-child(6) {
-  width: 72px;
-  min-width: 64px;
-  max-width: 80px;
-} /* CPA - narrow */
-
+.accounts-table td:nth-child(6),
 .accounts-table th:nth-child(7),
-.accounts-table td:nth-child(7) {
-  width: 72px;
-  min-width: 64px;
-  max-width: 84px;
-} /* Token */
-
+.accounts-table td:nth-child(7),
 .accounts-table th:nth-child(8),
-.accounts-table td:nth-child(8) {
-  width: 64px;
-  min-width: 56px;
-  max-width: 72px;
-} /* SSO alive */
-
+.accounts-table td:nth-child(8),
 .accounts-table th:nth-child(9),
-.accounts-table td:nth-child(9) { width: 12%; } /* expire */
+.accounts-table td:nth-child(9) {
+  width: 7%;
+  min-width: 52px;
+} /* SSO alive / Token / CPA / Sub2 - same band */
 
 .accounts-table th:nth-child(10),
-.accounts-table td:nth-child(10) {
-  width: 168px;
-  min-width: 150px;
-  max-width: 200px;
+.accounts-table td:nth-child(10) { width: 10%; } /* expire */
+
+.accounts-table th:nth-child(11),
+.accounts-table td:nth-child(11) {
+  width: 150px;
+  min-width: 140px;
+  max-width: 160px;
   overflow: visible;
   white-space: nowrap;
   text-overflow: clip;
 } /* actions */
+
+
+
 
 .account-sso,
 .account-email,
@@ -1305,4 +1301,26 @@ html[data-theme="dark"] .status-pill.tone-info {
 }
 html[data-theme="dark"] .settings-save-bar {
   background: rgba(15, 23, 42, 0.92);
+}
+
+.account-cpa-status,
+.account-sub2-status,
+.account-token-status,
+.account-sso-alive {
+  max-width: none;
+}
+.account-cpa-status .status-pill,
+.account-sub2-status .status-pill,
+.account-token-status .status-pill,
+.account-sso-alive .status-pill {
+  max-width: 100%;
+  padding: 4px 7px;
+  font-size: 10px;
+}
+.account-actions {
+  gap: 4px !important;
+}
+.account-actions .button-small {
+  padding: 5px 7px;
+  font-size: 10px;
 }
