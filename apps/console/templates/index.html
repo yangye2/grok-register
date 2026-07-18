@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Grok Register Console</title>
-  <link rel="stylesheet" href="/static/app.css?v=1784362576">
+  <link rel="stylesheet" href="/static/app.css?v=1784363627">
 </head>
 <body>
   <div class="shell">
@@ -276,9 +276,10 @@
               <span class="meta-label">Source</span>
               <strong>{{ source_project }}</strong>
             </article>
-            <article class="config-meta-card">
-              <span class="meta-label">并发上限</span>
-              <strong>{{ max_concurrent_tasks }}</strong>
+                        <article class="config-meta-card">
+              <span class="meta-label">当前注册并发</span>
+              <strong id="maxConcurrentTasksDisplay">{{ max_concurrent_tasks }}</strong>
+              <small class="meta-hint">可在下方「网络代理 / 运行时」修改并保存</small>
             </article>
           </div>
 
@@ -286,8 +287,13 @@
             <div class="settings-hint">保存后作为新建任务的默认配置；密钥类字段仅写入本机设置库。</div>
 
             <details class="settings-section" open>
-              <summary>网络代理</summary>
+              <summary>网络代理 / 运行时</summary>
               <div class="settings-grid">
+                <label>
+                  <span>注册任务并发上限 <em>max_concurrent_tasks</em></span>
+                  <input name="max_concurrent_tasks" id="maxConcurrentTasksInput" type="number" min="1" max="20" step="1" value="1" title="同时运行的注册任务数（1-20）。保存后立即生效，覆盖环境变量默认值。">
+                  <small class="field-hint">同时可运行的注册任务数（1-20）。保存后立即生效；仅影响任务级并发，不是单任务内账号并行。</small>
+                </label>
                 <label>
                   <span>浏览器代理 <em>browser_proxy</em></span>
                   <input name="browser_proxy" placeholder="socks5://warp:1080 / http://127.0.0.1:7890">
@@ -738,6 +744,6 @@
   <script>
     window.__DEFAULTS__ = {{ defaults|safe }};
   </script>
-  <script src="/static/app.js?v=1784362576" charset="utf-8"></script>
+  <script src="/static/app.js?v=1784363627" charset="utf-8"></script>
 </body>
 </html>

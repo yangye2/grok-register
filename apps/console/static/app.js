@@ -109,6 +109,11 @@
     formEl.elements.count.value = defaults.run?.count || 50;
     settingsFormEl.elements.proxy.value = defaults.proxy || "";
     settingsFormEl.elements.browser_proxy.value = defaults.browser_proxy || "";
+    if (settingsFormEl.elements.max_concurrent_tasks) {
+      settingsFormEl.elements.max_concurrent_tasks.value = defaults.max_concurrent_tasks ?? 1;
+    }
+    const maxConcEl = document.getElementById("maxConcurrentTasksDisplay");
+    if (maxConcEl) maxConcEl.textContent = String(defaults.max_concurrent_tasks ?? 1);
     settingsFormEl.elements.temp_mail_api_base.value = defaults.temp_mail_api_base || "";
     settingsFormEl.elements.temp_mail_admin_password.value = defaults.temp_mail_admin_password || "";
     settingsFormEl.elements.temp_mail_domain.value = defaults.temp_mail_domain || "";
@@ -1725,11 +1730,21 @@ accountsDownloadBtnEl.addEventListener("click", async () => {
     applyTheme(current === "dark" ? "light" : "dark");
   });
 
+  const maxConcurrentInputEl = settingsFormEl.elements.max_concurrent_tasks;
+  if (maxConcurrentInputEl) {
+    maxConcurrentInputEl.addEventListener("input", () => {
+      const maxConcEl = document.getElementById("maxConcurrentTasksDisplay");
+      const n = Math.max(1, Math.min(20, Number(maxConcurrentInputEl.value) || 1));
+      if (maxConcEl) maxConcEl.textContent = String(n);
+    });
+  }
+
   settingsFormEl.addEventListener("submit", async (event) => {
     event.preventDefault();
     const payload = {
       proxy: settingsFormEl.elements.proxy.value.trim(),
       browser_proxy: settingsFormEl.elements.browser_proxy.value.trim(),
+      max_concurrent_tasks: Number(settingsFormEl.elements.max_concurrent_tasks?.value ?? 1) || 1,
       temp_mail_api_base: settingsFormEl.elements.temp_mail_api_base.value.trim(),
       temp_mail_admin_password: settingsFormEl.elements.temp_mail_admin_password.value.trim(),
       temp_mail_domain: settingsFormEl.elements.temp_mail_domain.value.trim(),

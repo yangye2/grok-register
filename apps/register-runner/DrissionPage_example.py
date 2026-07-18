@@ -9,6 +9,7 @@ import datetime
 import logging
 import time
 import os
+import random
 import secrets
 import sys
 
@@ -1208,9 +1209,28 @@ Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
 
 
 def build_profile():
-    # 生成一组可重复使用的注册资料，密码至少包含大小写、数字和特殊字符。
-    given_name = "Neo"
-    family_name = "Lin"
+    """Generate registration profile: dynamic given/family name + strong password."""
+    given_name_pool = [
+        "Neo", "Ethan", "Liam", "Noah", "Lucas", "Mason", "Ryan", "Leo",
+        "Owen", "Aiden", "Elio", "Aron", "Ivan", "Nolan", "Evan", "Kai",
+        "Caleb", "Adam", "Ezra", "Miles", "Logan", "Carter", "Hunter", "Jason",
+        "Brian", "Dylan", "Alex", "Colin", "Blake", "Gavin", "Henry", "Julian",
+        "Kevin", "Louis", "Marcus", "Nathan", "Oscar", "Peter", "Quinn", "Robin",
+        "Simon", "Tristan", "Victor", "Wesley", "Xavier", "Yuri", "Zane", "Felix",
+        "Aaron", "Damian",
+    ]
+    family_name_pool = [
+        "Lin", "Wang", "Zhao", "Liu", "Chen", "Zhang", "Xu", "Sun",
+        "Guo", "He", "Yang", "Wu", "Zhou", "Tang", "Qin", "Shi",
+        "Fang", "Peng", "Cao", "Deng", "Fan", "Fu", "Gao", "Han",
+        "Hu", "Jiang", "Kong", "Lu", "Ma", "Nie", "Pan", "Qiao",
+        "Ren", "Shao", "Tian", "Xie", "Yan", "Yao", "Yu", "Zeng",
+        "Bai", "Duan", "Hou", "Jin", "Kang", "Luo", "Mao", "Song",
+        "Wei", "Xiong",
+    ]
+    given_name = random.choice(given_name_pool)
+    family_name = random.choice(family_name_pool)
+    # Password: upper + hex + special + url-safe mix
     password = "N" + secrets.token_hex(4) + "!a7#" + secrets.token_urlsafe(6)
     return given_name, family_name, password
 

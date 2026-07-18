@@ -55,8 +55,24 @@ SOURCE_PROJECT = Path(os.getenv("GROK_REGISTER_SOURCE_DIR", str(REPO_ROOT))).res
 SOURCE_VENV_PYTHON = Path(
     os.getenv("GROK_REGISTER_PYTHON", str(default_source_python(SOURCE_PROJECT)))
 ).expanduser()
-MAX_CONCURRENT_TASKS = max(1, int(os.getenv("GROK_REGISTER_CONSOLE_MAX_CONCURRENT_TASKS", "1")))
+DEFAULT_MAX_CONCURRENT_TASKS = max(1, int(os.getenv("GROK_REGISTER_CONSOLE_MAX_CONCURRENT_TASKS", "1")))
+MAX_CONCURRENT_TASKS_CAP = max(1, int(os.getenv("GROK_REGISTER_CONSOLE_MAX_CONCURRENT_TASKS_CAP", "20")))
 SUPERVISOR_INTERVAL = max(1.0, float(os.getenv("GROK_REGISTER_CONSOLE_POLL_INTERVAL", "2")))
+
+
+def get_max_concurrent_tasks() -> int:
+    """Runtime concurrent register tasks limit (settings override env default)."""
+    try:
+        saved = read_settings()
+        if "max_concurrent_tasks" in saved and saved.get("max_concurrent_tasks") is not None:
+            n = int(saved.get("max_concurrent_tasks") or DEFAULT_MAX_CONCURRENT_TASKS)
+        else:
+            n = DEFAULT_MAX_CONCURRENT_TASKS
+    except Exception:
+        n = DEFAULT_MAX_CONCURRENT_TASKS
+    n = max(1, min(int(n or 1), MAX_CONCURRENT_TASKS_CAP))
+    return n
+
 
 # Console login (enabled when GROK_REGISTER_AUTH_PASSWORD is non-empty)
 AUTH_USER = (os.getenv("GROK_REGISTER_AUTH_USER", "admin") or "admin").strip()
@@ -963,6 +979,7 @@ class SystemSettings(BaseModel):
     outmail_used_file: str = "outmail_used_mailboxes.txt"
     domain_auth_fail_threshold: int = Field(default=3, ge=1, le=100)
     domain_auth_fail_auto_remove: bool = True
+    max_concurrent_tasks: int = Field(default=1, ge=1, le=20)
     cpa_export_enabled: bool = False
     cpa_post_task_oauth_enabled: bool = False
     cpa_post_task_refresh_enabled: bool = True
@@ -1136,7 +1153,7 @@ def merged_defaults() -> dict[str, Any]:
     for key in ("domain_auth_fail_threshold", "domain_auth_fail_auto_remove"):
         if key in saved:
             base[key] = saved[key]
-    for key in ("cpa_export_enabled", "cpa_post_task_oauth_enabled", "cpa_post_task_refresh_enabled", "cpa_auth_dir", "cpa_copy_to_hotload", "cpa_hotload_dir",
+    for key in ("max_concurrent_tasks", "cpa_export_enabled", "cpa_post_task_oauth_enabled", "cpa_post_task_refresh_enabled", "cpa_auth_dir", "cpa_copy_to_hotload", "cpa_hotload_dir",
                 "cpa_proxy", "cpa_headless", "cpa_mint_timeout_sec", "cpa_cloud_upload_enabled", "cpa_register_push_enabled",
                 "cpa_cloud_api_base", "cpa_cloud_management_key", "cpa_cloud_upload_timeout",
                 "cpa_cloud_upload_retries", "cpa_batch_retry_count", "cpa_mint_browser_recycle_every",
@@ -1156,6 +1173,18 @@ def merged_defaults() -> dict[str, Any]:
     base["cpa_mint_browser_recycle_every"] = _as_nonneg_int(
         base.get("cpa_mint_browser_recycle_every"), 15, maximum=200
     )
+
+
+    # concurrent tasks limit
+    if "max_concurrent_tasks" not in base:
+        base["max_concurrent_tasks"] = DEFAULT_MAX_CONCURRENT_TASKS
+    try:
+        base["max_concurrent_tasks"] = max(
+            1,
+            min(int(base.get("max_concurrent_tasks") or DEFAULT_MAX_CONCURRENT_TASKS), MAX_CONCURRENT_TASKS_CAP),
+        )
+    except (TypeError, ValueError):
+        base["max_concurrent_tasks"] = DEFAULT_MAX_CONCURRENT_TASKS
 
     if "cpa_post_task_oauth_enabled" not in base:
         # 默认不做完整 OAuth；用批量续期（无 auth 时 SSO 兜底重建）
@@ -3610,7 +3639,7 @@ class TaskSupervisor:
             time.sleep(SUPERVISOR_INTERVAL)
 
     def _launch_queued(self) -> None:
-        slots = MAX_CONCURRENT_TASKS - self._running_count()
+        slots = get_max_concurrent_tasks() - self._running_count()
         if slots <= 0:
             return
         queued = fetch_all(
@@ -3891,7 +3920,7 @@ def index(request: Request) -> HTMLResponse:
         {
             "request": request,
             "defaults": json.dumps(public_defaults(), ensure_ascii=False),
-            "max_concurrent_tasks": MAX_CONCURRENT_TASKS,
+            "max_concurrent_tasks": get_max_concurrent_tasks(),
             "source_project": str(SOURCE_PROJECT),
         },
     )
@@ -3905,7 +3934,7 @@ def api_meta() -> dict[str, Any]:
         "source_project": str(SOURCE_PROJECT),
         "python_path": resolve_source_python(),
         "configured_python_path": str(SOURCE_VENV_PYTHON),
-        "max_concurrent_tasks": MAX_CONCURRENT_TASKS,
+        "max_concurrent_tasks": get_max_concurrent_tasks(),
     }
 
 

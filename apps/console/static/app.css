@@ -1348,3 +1348,16 @@ html[data-theme="dark"] .settings-save-bar {
 .account-cpa-log-panel .task-row {
   align-items: center;
 }
+
+.meta-hint,
+.field-hint {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--muted, #8b93a7);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  font-weight: 400;
+}
+.config-meta-card .meta-hint {
+  margin-top: 0.4rem;
+}

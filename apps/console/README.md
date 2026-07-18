@@ -46,7 +46,7 @@ deploy\start-console.bat
 - `GROK_REGISTER_PYTHON=/home/codex/grok-register/.venv/bin/python`
 - `GROK_REGISTER_CONSOLE_HOST=0.0.0.0`
 - `GROK_REGISTER_CONSOLE_PORT=18600`
-- `GROK_REGISTER_CONSOLE_MAX_CONCURRENT_TASKS=1`
+- `GROK_REGISTER_CONSOLE_MAX_CONCURRENT_TASKS=1`???????????? `max_concurrent_tasks` ?????????? 1-20?
 
 ## 手工启动
 
