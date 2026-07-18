@@ -156,11 +156,11 @@ def reload_mail_config(config=None):
 
 
 def get_email_and_token():
-    """????????? (email, mail_token)??? outmail ???/?????"""
+    """获取邮箱与 token (email, mail_token)；outmail 走账号池/匿名邮箱。"""
     provider = get_email_provider()
     if _outmail_is_provider(provider):
         if not _HAS_OUTMAIL:
-            raise Exception(f"outmail ?????: {_outmail_import_exc}")
+            raise Exception(f"outmail 模块不可用: {_outmail_import_exc}")
         try:
             if _config_path.exists():
                 with _config_path.open("r", encoding="utf-8") as f:
@@ -181,12 +181,12 @@ def get_email_and_token():
 
 
 def get_oai_code(dev_token, email, timeout=30):
-    """??????? OTP ????outmail token ??? Outmail ???"""
+    """拉取注册 OTP 验证码；outmail token 走 Outmail 拉信。"""
     token_s = str(dev_token or "")
     provider = get_email_provider()
     if _outmail_is_provider(provider) or token_s.startswith("outmail|"):
         if not _HAS_OUTMAIL:
-            raise Exception(f"outmail ?????: {_outmail_import_exc}")
+            raise Exception(f"outmail 模块不可用: {_outmail_import_exc}")
         try:
             cfg_timeout = int((_conf.get("outmail_poll_timeout_sec") or 180))
         except (TypeError, ValueError):

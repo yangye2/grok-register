@@ -667,5 +667,5 @@ def sso_oauth_to_cpa_auth(
     """High-level: SSO ? CPA auth dict. Raises on failure."""
     token = sso_to_token(sso_cookie, proxy=proxy, quiet=True, log=log)
     if not isinstance(token, dict):
-        raise RuntimeError("SSO OAuth ???????? token?SSO ?????????")
+        raise RuntimeError("SSO OAuth 未能拿到 token，请检查 SSO 是否有效或已过期")
     return token_to_cpa_auth(token, email=email, base_url=base_url, sso=sso_cookie)

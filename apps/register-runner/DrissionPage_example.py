@@ -26,14 +26,14 @@ def load_cpa_config() -> dict:
 
 
 def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
-    """Post-register: SSO OAuth (new) + delayed liveness probe.
+    """注册完成后的授权 + 测活（与账号管理「单独 OAuth / 单独测活」同一套逻辑）。
 
-    Aligns with account-management maintain flow:
-      1) pure HTTP SSO device-flow OAuth (prefer)
-      2) wait cpa_probe_delay_sec (default 5s)
-      3) unified check_account_liveness (SSO + API)
-      4) optional cloud/sub2api push via cpa_export post path
-    Falls back to browser mint only when SSO OAuth fails and password is available.
+    对齐 apps/console/app.py:
+      - OAuth: export_cpa_xai_via_sso（同 run_account_sso_oauth，纯 HTTP SSO device-flow）
+      - 延时: cpa_probe_delay_sec（默认 5s）
+      - 测活: check_account_liveness（同 run_account_token_probe）
+    可选：测活通过后再做 cloud / sub2api 推送（注册任务自动化，账号管理单独 OAuth 不自动推）。
+    说明：不再走浏览器密码 mint 作为注册后主路径，与单独 OAuth 一致。
     """
     import time
 
@@ -41,15 +41,16 @@ def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
     if not bool(config.get("cpa_export_enabled", False)):
         return {"ok": False, "skipped": True, "reason": "disabled"}
 
-    log = lambda message: print(message, flush=True)
+    def log(message: str) -> None:
+        print(message, flush=True)
+
     sso_val = (sso_value or "").strip()
     email = (email or "").strip()
-    password = password or ""
+    password = password or ""  # kept for signature compatibility; OAuth path does not use it
+    _ = password
 
-    # Force new-path defaults for register completion.
     cfg = dict(config)
     cfg.setdefault("cpa_prefer_sso_oauth", True)
-    prefer_sso = bool(cfg.get("cpa_prefer_sso_oauth", True))
     try:
         probe_delay = float(cfg.get("cpa_probe_delay_sec", 5) or 5)
     except (TypeError, ValueError):
@@ -65,77 +66,61 @@ def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
         log(f"[cpa] import cpa_export failed: {exc}")
         return {"ok": False, "error": f"import cpa_export: {exc}"}
 
-    # ---- 1) SSO OAuth (new pure HTTP path) ----
-    if prefer_sso and sso_val:
-        log("[cpa] post-register: SSO OAuth (pure HTTP device-flow)")
-        try:
-            if hasattr(cpa_export, "export_cpa_xai_via_sso"):
-                sso_result = cpa_export.export_cpa_xai_via_sso(
-                    email,
-                    sso_val,
-                    config={**cfg, "cpa_probe_after_write": False},
-                    log_callback=log,
-                )
-            else:
-                sso_result = cpa_export.export_cpa_xai_for_account(
-                    email,
-                    password or "unused",
-                    page=None,
-                    sso=sso_val,
-                    config={**cfg, "cpa_prefer_sso_oauth": True, "cpa_probe_after_write": False},
-                    log_callback=log,
-                )
-            if sso_result.get("ok") and sso_result.get("path"):
-                result = dict(sso_result)
-                result["mode"] = result.get("mode") or "sso_oauth"
-                log(f"[cpa] SSO OAuth ok: {result.get('path')}")
-            else:
-                log(
-                    f"[cpa] SSO OAuth failed, will fallback browser mint: "
-                    f"{sso_result.get('error') or sso_result}"
-                )
-                result = {"ok": False, "error": sso_result.get("error") or "sso_oauth_failed"}
-        except Exception as exc:
-            log(f"[cpa] SSO OAuth exception: {exc}")
-            result = {"ok": False, "error": str(exc)}
-    else:
-        if not sso_val:
-            log("[cpa] no SSO cookie; skip pure SSO OAuth")
-        result = {"ok": False, "error": "no_sso_or_prefer_disabled"}
+    # ---- 1) 单独 OAuth（同 run_account_sso_oauth）----
+    if not sso_val:
+        log("[cpa-oauth] missing SSO cookie, skip OAuth (same as account OAuth)")
+        return {"ok": False, "email": email, "error": "missing sso", "mode": "sso_oauth"}
+    if not email:
+        log("[cpa-oauth] missing email, skip OAuth")
+        return {"ok": False, "error": "missing email", "mode": "sso_oauth"}
 
-    # ---- 2) Fallback: full export (browser mint if needed) ----
-    if not result.get("ok"):
-        log("[cpa] post-register: fallback export_cpa_xai_for_account")
-        try:
-            fb = cpa_export.export_cpa_xai_for_account(
+    log("[cpa-oauth] start SSO OAuth (same as account single OAuth)")
+    # 单独 OAuth 不做内置 models probe；测活由下一步统一 check_account_liveness 完成
+    oauth_cfg = {**cfg, "cpa_probe_after_write": False, "cpa_prefer_sso_oauth": True}
+    try:
+        if hasattr(cpa_export, "export_cpa_xai_via_sso"):
+            oauth_result = cpa_export.export_cpa_xai_via_sso(
                 email,
-                password,
-                page=page,
-                sso=sso_val or None,
-                config={**cfg, "cpa_prefer_sso_oauth": prefer_sso, "cpa_probe_after_write": False},
-                log_callback=log,
+                sso_val,
+                config=oauth_cfg,
+                log_callback=lambda m: log(f"[cpa-oauth] {m}"),
             )
-            result = dict(fb or {})
-            if result.get("ok") and not result.get("mode"):
-                result["mode"] = "browser_mint" if not prefer_sso else "export_fallback"
-        except Exception as exc:
-            log(f"[cpa] export exception: {exc}")
-            return {"ok": False, "error": str(exc)}
+        else:
+            oauth_result = cpa_export.export_cpa_xai_for_account(
+                email,
+                "unused",
+                page=None,
+                sso=sso_val,
+                config=oauth_cfg,
+                log_callback=lambda m: log(f"[cpa-oauth] {m}"),
+            )
+    except Exception as exc:
+        log(f"[cpa-oauth] exception: {exc}")
+        return {"ok": False, "email": email, "error": str(exc), "mode": "sso_oauth"}
 
-    auth_path = str(result.get("cpa_path") or result.get("path") or "").strip()
-    if result.get("ok") and auth_path:
-        log(f"[cpa] auth generated: {auth_path}")
-    elif result.get("skipped"):
-        log(f"[cpa] export skipped: {result.get('reason', 'unknown')}")
-        return result
-    else:
-        log(f"[cpa] auth generation failed: {result.get('error') or result}")
-        return result
+    if not oauth_result.get("ok") or not (oauth_result.get("path") or oauth_result.get("cpa_path")):
+        err = oauth_result.get("error") or "sso_oauth_failed"
+        log(f"[cpa-oauth] failed: {err}")
+        return {
+            "ok": False,
+            "email": email,
+            "error": err,
+            "mode": oauth_result.get("mode") or "sso_oauth",
+            "oauth": oauth_result,
+        }
 
-    # ---- 3) Delayed unified liveness (same as account-management probe) ----
+    result = dict(oauth_result)
+    result["mode"] = result.get("mode") or "sso_oauth"
+    auth_path = str(result.get("path") or result.get("cpa_path") or "").strip()
+    result["path"] = auth_path
+    result["cpa_path"] = auth_path
+    result["ok"] = True
+    log(f"[cpa-oauth] success path={auth_path}")
+
+    # ---- 2) 延时 + 单独测活（同 run_account_token_probe）----
     if do_probe and auth_path:
         if probe_delay > 0:
-            log(f"[cpa-probe] wait {probe_delay:.1f}s before liveness check")
+            log(f"[cpa-probe] wait {probe_delay:.1f}s before liveness (cpa_probe_delay_sec)")
             time.sleep(probe_delay)
         try:
             from cpa_xai.token_maintain import check_account_liveness  # type: ignore
@@ -162,40 +147,52 @@ def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
                 timeout=float(cfg.get("cpa_health_check_timeout", 15) or 15),
                 log=lambda m: log(f"[cpa-probe] {m}"),
             )
-            result["liveness"] = {
-                k: v for k, v in (live or {}).items() if k != "auth"
-            }
-            result["token_status"] = (
-                "alive"
-                if live.get("alive")
-                else (
-                    "sso_dead"
-                    if (live.get("sso") or {}).get("alive") is False
-                    else "api_dead"
-                    if (live.get("health") or {}).get("ok") is False
-                    else "dead"
-                )
-            )
-            result["sso_alive"] = (live.get("sso") or {}).get("alive")
+            sso_res = live.get("sso") if isinstance(live.get("sso"), dict) else {}
+            health = live.get("health") if isinstance(live.get("health"), dict) else {}
+
+            # token_status 映射与 run_account_token_probe 一致
+            if live.get("alive"):
+                token_status = "alive"
+            elif sso_res.get("alive") is False and not auth_path:
+                token_status = "sso_dead"
+            elif health and health.get("ok") is False:
+                token_status = "api_dead"
+            elif sso_res.get("alive") is False:
+                token_status = "sso_dead"
+            else:
+                token_status = "dead" if live.get("ok") is False else "unknown"
+
+            result["liveness"] = {k: v for k, v in (live or {}).items() if k != "auth"}
+            result["token_status"] = token_status
+            result["sso_alive"] = sso_res.get("alive")
+            result["alive"] = bool(live.get("alive"))
+
             if not live.get("alive"):
                 result["ok"] = False
                 result["error"] = (
                     live.get("error")
-                    or (live.get("health") or {}).get("message")
+                    or health.get("message")
                     or "liveness_failed"
                 )
-                log(f"[cpa-probe] FAIL status={result.get('token_status')} err={result.get('error')}")
+                log(
+                    f"[cpa-probe] FAIL status={token_status} "
+                    f"alive={live.get('alive')} sso={sso_res.get('alive')} "
+                    f"health={health.get('ok')} err={result.get('error')}"
+                )
             else:
-                log(f"[cpa-probe] PASS status=alive sso={result.get('sso_alive')}")
+                log(
+                    f"[cpa-probe] PASS status=alive sso={sso_res.get('alive')} "
+                    f"health={health.get('ok')}"
+                )
         except Exception as exc:
             log(f"[cpa-probe] liveness exception: {exc}")
             result["liveness_error"] = str(exc)
-            # Do not hard-fail export on probe module issues if auth file exists
+            result["token_status"] = "error"
             if bool(cfg.get("cpa_probe_required", False)):
                 result["ok"] = False
                 result["error"] = f"liveness: {exc}"
 
-    # ---- 4) Remote push (align with export_cpa_xai_for_account) ----
+    # ---- 3) 可选推送（注册自动化；账号管理单独 OAuth/测活不自动推）----
     if result.get("ok") and auth_path:
         push_path = str(result.get("cpa_path") or result.get("hotload_path") or auth_path)
         try:
@@ -228,7 +225,6 @@ def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
                 result["sub2api_error"] = str(exc)
 
     return result
-
 
 
 def setup_run_logger() -> logging.Logger:
@@ -681,13 +677,13 @@ def fill_code_and_submit(email, dev_token, timeout=60):
     print(f"[*] 获取到验证码: {code_raw} -> fill={code}")
 
     if on_signup_profile_step():
-        print("[*] ????????????????????")
+        print("[*] 已处于资料填写页，跳过验证码写入")
         return (code if code else "SKIPPED")
 
     deadline = time.time() + timeout
     while time.time() < deadline:
         if on_signup_profile_step():
-            print("[*] ??????????????????????")
+            print("[*] 轮询中检测到资料页，跳过验证码写入")
             return code
         try:
             filled = page.run_js(

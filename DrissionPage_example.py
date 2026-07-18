@@ -26,25 +26,204 @@ def load_cpa_config() -> dict:
 
 
 def export_cpa_auth(email: str, password: str, sso_value: str) -> dict:
-    """Create a CPA xAI credential without invalidating a successful registration."""
+    """注册完成后的授权 + 测活（与账号管理「单独 OAuth / 单独测活」同一套逻辑）。
+
+    对齐 apps/console/app.py:
+      - OAuth: export_cpa_xai_via_sso（同 run_account_sso_oauth，纯 HTTP SSO device-flow）
+      - 延时: cpa_probe_delay_sec（默认 5s）
+      - 测活: check_account_liveness（同 run_account_token_probe）
+    可选：测活通过后再做 cloud / sub2api 推送（注册任务自动化，账号管理单独 OAuth 不自动推）。
+    说明：不再走浏览器密码 mint 作为注册后主路径，与单独 OAuth 一致。
+    """
+    import time
+
     config = load_cpa_config()
     if not bool(config.get("cpa_export_enabled", False)):
         return {"ok": False, "skipped": True, "reason": "disabled"}
+
+    def log(message: str) -> None:
+        print(message, flush=True)
+
+    sso_val = (sso_value or "").strip()
+    email = (email or "").strip()
+    password = password or ""  # kept for signature compatibility; OAuth path does not use it
+    _ = password
+
+    cfg = dict(config)
+    cfg.setdefault("cpa_prefer_sso_oauth", True)
+    try:
+        probe_delay = float(cfg.get("cpa_probe_delay_sec", 5) or 5)
+    except (TypeError, ValueError):
+        probe_delay = 5.0
+    probe_delay = max(0.0, min(120.0, probe_delay))
+    do_probe = bool(cfg.get("cpa_probe_after_write", True))
+
+    result: dict = {"ok": False, "email": email, "mode": ""}
+
     try:
         import cpa_export
-        result = cpa_export.export_cpa_xai_for_account(
-            email, password, page=page, sso=sso_value, config=config,
-            log_callback=lambda message: print(message, flush=True),
-        )
     except Exception as exc:
-        print(f"[cpa] export exception: {exc}")
-        return {"ok": False, "error": str(exc)}
-    if result.get("ok"):
-        print(f"[cpa] auth generated: {result.get('cpa_path') or result.get('path')}")
-    elif result.get("skipped"):
-        print(f"[cpa] export skipped: {result.get('reason', 'unknown')}")
-    else:
-        print(f"[cpa] auth generation failed: {result.get('error') or result}")
+        log(f"[cpa] import cpa_export failed: {exc}")
+        return {"ok": False, "error": f"import cpa_export: {exc}"}
+
+    # ---- 1) 单独 OAuth（同 run_account_sso_oauth）----
+    if not sso_val:
+        log("[cpa-oauth] missing SSO cookie, skip OAuth (same as account OAuth)")
+        return {"ok": False, "email": email, "error": "missing sso", "mode": "sso_oauth"}
+    if not email:
+        log("[cpa-oauth] missing email, skip OAuth")
+        return {"ok": False, "error": "missing email", "mode": "sso_oauth"}
+
+    log("[cpa-oauth] start SSO OAuth (same as account single OAuth)")
+    # 单独 OAuth 不做内置 models probe；测活由下一步统一 check_account_liveness 完成
+    oauth_cfg = {**cfg, "cpa_probe_after_write": False, "cpa_prefer_sso_oauth": True}
+    try:
+        if hasattr(cpa_export, "export_cpa_xai_via_sso"):
+            oauth_result = cpa_export.export_cpa_xai_via_sso(
+                email,
+                sso_val,
+                config=oauth_cfg,
+                log_callback=lambda m: log(f"[cpa-oauth] {m}"),
+            )
+        else:
+            oauth_result = cpa_export.export_cpa_xai_for_account(
+                email,
+                "unused",
+                page=None,
+                sso=sso_val,
+                config=oauth_cfg,
+                log_callback=lambda m: log(f"[cpa-oauth] {m}"),
+            )
+    except Exception as exc:
+        log(f"[cpa-oauth] exception: {exc}")
+        return {"ok": False, "email": email, "error": str(exc), "mode": "sso_oauth"}
+
+    if not oauth_result.get("ok") or not (oauth_result.get("path") or oauth_result.get("cpa_path")):
+        err = oauth_result.get("error") or "sso_oauth_failed"
+        log(f"[cpa-oauth] failed: {err}")
+        return {
+            "ok": False,
+            "email": email,
+            "error": err,
+            "mode": oauth_result.get("mode") or "sso_oauth",
+            "oauth": oauth_result,
+        }
+
+    result = dict(oauth_result)
+    result["mode"] = result.get("mode") or "sso_oauth"
+    auth_path = str(result.get("path") or result.get("cpa_path") or "").strip()
+    result["path"] = auth_path
+    result["cpa_path"] = auth_path
+    result["ok"] = True
+    log(f"[cpa-oauth] success path={auth_path}")
+
+    # ---- 2) 延时 + 单独测活（同 run_account_token_probe）----
+    if do_probe and auth_path:
+        if probe_delay > 0:
+            log(f"[cpa-probe] wait {probe_delay:.1f}s before liveness (cpa_probe_delay_sec)")
+            time.sleep(probe_delay)
+        try:
+            from cpa_xai.token_maintain import check_account_liveness  # type: ignore
+
+            proxy = (
+                str(
+                    cfg.get("cpa_proxy")
+                    or cfg.get("browser_proxy")
+                    or cfg.get("proxy")
+                    or ""
+                ).strip()
+                or None
+            )
+            live = check_account_liveness(
+                auth_path=auth_path,
+                sso=sso_val or None,
+                proxy=proxy,
+                probe_api=True,
+                probe_sso=bool(sso_val),
+                auto_refresh=False,
+                force_refresh=False,
+                skew_seconds=float(cfg.get("cpa_token_refresh_skew_sec", 300) or 300),
+                model=str(cfg.get("cpa_health_check_model") or "grok-4.5"),
+                timeout=float(cfg.get("cpa_health_check_timeout", 15) or 15),
+                log=lambda m: log(f"[cpa-probe] {m}"),
+            )
+            sso_res = live.get("sso") if isinstance(live.get("sso"), dict) else {}
+            health = live.get("health") if isinstance(live.get("health"), dict) else {}
+
+            # token_status 映射与 run_account_token_probe 一致
+            if live.get("alive"):
+                token_status = "alive"
+            elif sso_res.get("alive") is False and not auth_path:
+                token_status = "sso_dead"
+            elif health and health.get("ok") is False:
+                token_status = "api_dead"
+            elif sso_res.get("alive") is False:
+                token_status = "sso_dead"
+            else:
+                token_status = "dead" if live.get("ok") is False else "unknown"
+
+            result["liveness"] = {k: v for k, v in (live or {}).items() if k != "auth"}
+            result["token_status"] = token_status
+            result["sso_alive"] = sso_res.get("alive")
+            result["alive"] = bool(live.get("alive"))
+
+            if not live.get("alive"):
+                result["ok"] = False
+                result["error"] = (
+                    live.get("error")
+                    or health.get("message")
+                    or "liveness_failed"
+                )
+                log(
+                    f"[cpa-probe] FAIL status={token_status} "
+                    f"alive={live.get('alive')} sso={sso_res.get('alive')} "
+                    f"health={health.get('ok')} err={result.get('error')}"
+                )
+            else:
+                log(
+                    f"[cpa-probe] PASS status=alive sso={sso_res.get('alive')} "
+                    f"health={health.get('ok')}"
+                )
+        except Exception as exc:
+            log(f"[cpa-probe] liveness exception: {exc}")
+            result["liveness_error"] = str(exc)
+            result["token_status"] = "error"
+            if bool(cfg.get("cpa_probe_required", False)):
+                result["ok"] = False
+                result["error"] = f"liveness: {exc}"
+
+    # ---- 3) 可选推送（注册自动化；账号管理单独 OAuth/测活不自动推）----
+    if result.get("ok") and auth_path:
+        push_path = str(result.get("cpa_path") or result.get("hotload_path") or auth_path)
+        try:
+            cloud = cpa_export.upload_cpa_auth_to_cloud(push_path, cfg, log)
+            result["cloud_cpa_upload"] = cloud
+            if isinstance(cloud, dict) and cloud.get("ok"):
+                result["cloud_uploaded"] = True
+                log("[cpa] cloud upload ok")
+            elif isinstance(cloud, dict) and cloud.get("health_failed"):
+                result["ok"] = False
+                result["error"] = (
+                    cloud.get("error") or cloud.get("message") or "health_failed_before_upload"
+                )
+                log(f"[cpa] cloud upload blocked by health: {result['error']}")
+        except Exception as exc:
+            log(f"[cpa] cloud upload exception: {exc}")
+            result["cloud_cpa_upload"] = {"ok": False, "error": str(exc)}
+
+        if bool(cfg.get("sub2api_upload_enabled", False)) or bool(
+            cfg.get("sub2api_export_enabled", False)
+        ):
+            try:
+                sub_mod = cpa_export._import_cpa_to_sub2api()
+                sub_res = sub_mod.export_after_cpa_result(
+                    result, config=cfg, log_callback=log
+                )
+                result["sub2api"] = sub_res
+            except Exception as exc:
+                log(f"[sub2api] export failed: {exc}")
+                result["sub2api_error"] = str(exc)
+
     return result
 
 

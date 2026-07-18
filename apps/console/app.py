@@ -2417,7 +2417,7 @@ def run_account_token_probe(
     auto_refresh: bool = False,
     force_refresh: bool = False,
 ) -> dict[str, Any]:
-    """???SSO cookie + ?? API chat/completions???????"""
+    """账号测活：SSO cookie + 可选 API chat/completions（与注册后测活同一套 check_account_liveness）。"""
     row = account_row(account_id)
     email = str(row_get(row, "email", "") or "")
     sso = str(row_get(row, "sso", "") or "").strip()
@@ -2430,7 +2430,7 @@ def run_account_token_probe(
         append_account_cpa_log(account_id, message)
 
     account_log(
-        f"???? email={email} probe_api={probe_api} probe_sso={probe_sso} "
+        f"开始测活 email={email} probe_api={probe_api} probe_sso={probe_sso} "
         f"auto_refresh={auto_refresh} force_refresh={force_refresh}"
     )
     try:
@@ -2451,7 +2451,7 @@ def run_account_token_probe(
             log=account_log,
         )
     except Exception as exc:  # noqa: BLE001
-        account_log(f"????: {exc}")
+        account_log(f"测活异常: {exc}")
         _update_account_token_fields(
             account_id,
             token_status="error",
@@ -2495,7 +2495,7 @@ def run_account_token_probe(
     err_text = str(result.get("error") or health.get("message") or "")[:500]
     # Map liveness into account CPA status so UI "CPA" column reflects probe outcome.
     # alive  -> keep generated/uploaded if already authorized; else mark generated when file exists
-    # dead   -> invalid (??????????)
+    # dead   -> invalid（测活失败，标记账号无效）
     cpa_status_update: str | None = None
     row_now = fetch_one("SELECT cpa_status, cpa_path FROM accounts WHERE id = ?", (account_id,))
     prev_cpa = str(row_get(row_now, "cpa_status", "not_started") or "not_started")
@@ -2545,7 +2545,7 @@ def run_account_token_probe(
         )
 
     account_log(
-        f"???? status={status} cpa={cpa_status_update or prev_cpa} "
+        f"测活完成 status={status} cpa={cpa_status_update or prev_cpa} "
         f"alive={result.get('alive')} sso={sso_res.get('alive')} health={health.get('ok')}"
     )
     return {
@@ -2566,7 +2566,7 @@ def run_account_token_refresh(
     force: bool = True,
     allow_sso_fallback: bool = True,
 ) -> dict[str, Any]:
-    """Token ????? refresh_token????? SSO ?? SSO ????"""
+    """Token 续期：优先 refresh_token，失败时可回退 SSO OAuth 重建。"""
     row = account_row(account_id)
     email = str(row_get(row, "email", "") or "")
     sso = str(row_get(row, "sso", "") or "").strip()
@@ -2579,12 +2579,12 @@ def run_account_token_refresh(
         append_account_cpa_log(account_id, message)
 
     if auth_path is None and not (allow_sso_fallback and sso):
-        msg = "??????? SSO?????"
+        msg = "缺少 auth 文件且无 SSO，无法续期"
         account_log(msg)
         _update_account_token_fields(account_id, token_status="error", token_error=msg)
         return {"ok": False, "account_id": account_id, "error": msg}
 
-    account_log(f"?? Token ?? force={force} sso_fallback={allow_sso_fallback}")
+    account_log(f"开始 Token 续期 force={force} sso_fallback={allow_sso_fallback}")
     try:
         _ensure_cpa_xai_importable()
         from cpa_xai.token_maintain import (  # type: ignore
@@ -2609,7 +2609,7 @@ def run_account_token_refresh(
             path_value = str(result.get("path") or auth_path)
         else:
             # No existing file: mint via SSO only
-            account_log("?????????? SSO OAuth ??")
+            account_log("无 auth 文件，改用 SSO OAuth 重建")
             payload = sso_oauth_to_cpa_auth(
                 sso,
                 email=email,
@@ -2630,7 +2630,7 @@ def run_account_token_refresh(
                 "path": path_value,
             }
     except Exception as exc:  # noqa: BLE001
-        account_log(f"????: {exc}")
+        account_log(f"续期异常: {exc}")
         _update_account_token_fields(
             account_id,
             token_status="refresh_failed",
@@ -2656,7 +2656,7 @@ def run_account_token_refresh(
             cpa_status="generated" if result.get("renewed") else None,
         )
         account_log(
-            f"???? ok={result.get('ok')} renewed={result.get('renewed')} "
+            f"续期完成 ok={result.get('ok')} renewed={result.get('renewed')} "
             f"source={result.get('source')} exp={expires_at}"
         )
         return {
@@ -2678,7 +2678,7 @@ def run_account_token_refresh(
         token_error=str(result.get("error") or "refresh_failed")[:500],
         cpa_path=path_value if "path_value" in locals() else None,
     )
-    account_log(f"????: {result.get('error')}")
+    account_log(f"续期失败: {result.get('error')}")
     return {
         "ok": False,
         "account_id": account_id,
@@ -2693,7 +2693,7 @@ def run_account_sso_oauth(
     *,
     manage_job: bool = False,
 ) -> dict[str, Any]:
-    """OAuth ?????SSO cookie ? device flow ? ? CPA ?????"""
+    """单独 OAuth：SSO cookie 经 device flow 写入 CPA auth（与注册后 OAuth 同一套）。"""
     row = account_row(account_id)
     email = str(row_get(row, "email", "") or "").strip()
     sso = str(row_get(row, "sso", "") or "").strip()
@@ -2704,7 +2704,7 @@ def run_account_sso_oauth(
         append_account_cpa_log(account_id, message)
 
     if not email or not sso:
-        msg = "??????? SSO??? OAuth ??"
+        msg = "缺少邮箱或 SSO，无法执行 OAuth"
         account_log(msg)
         execute_no_return(
             "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ? WHERE id = ?",
@@ -2716,14 +2716,16 @@ def run_account_sso_oauth(
         "UPDATE accounts SET cpa_status = ?, cpa_error = '', cpa_updated_at = ? WHERE id = ?",
         ("running", now_iso(), account_id),
     )
-    account_log("?? SSO OAuth ? HTTP ??")
+    account_log("开始 SSO OAuth（纯 HTTP device-flow）")
     try:
         mod = load_cpa_export_module()
+        # 与注册完成后 / 单独 OAuth 一致：纯 SSO OAuth，不做内置 models probe
+        oauth_cfg = {**cfg, "cpa_prefer_sso_oauth": True, "cpa_probe_after_write": False}
         if hasattr(mod, "export_cpa_xai_via_sso"):
             result = mod.export_cpa_xai_via_sso(
                 email,
                 sso,
-                config=cfg,
+                config=oauth_cfg,
                 log_callback=account_log,
             )
         else:
@@ -2732,7 +2734,7 @@ def run_account_sso_oauth(
                 email,
                 str(row_get(row, "password", "") or "unused"),
                 sso=sso,
-                config={**cfg, "cpa_prefer_sso_oauth": True},
+                config=oauth_cfg,
                 log_callback=account_log,
             )
         if not result.get("ok") or not result.get("path"):
@@ -2765,7 +2767,7 @@ def run_account_sso_oauth(
                 account_id,
             ),
         )
-        account_log(f"SSO OAuth ??: {path_value}")
+        account_log(f"SSO OAuth 成功: {path_value}")
         return {
             "ok": True,
             "account_id": account_id,
@@ -2775,7 +2777,7 @@ def run_account_sso_oauth(
             "mode": result.get("mode") or "sso_oauth",
         }
     except Exception as exc:  # noqa: BLE001
-        account_log(f"SSO OAuth ??: {exc}")
+        account_log(f"SSO OAuth 失败: {exc}")
         execute_no_return(
             "UPDATE accounts SET cpa_status = ?, cpa_error = ?, cpa_updated_at = ?, token_status = ?, token_error = ?, token_checked_at = ? WHERE id = ?",
             ("failed", str(exc)[:500], now_iso(), "oauth_failed", str(exc)[:500], now_iso(), account_id),
@@ -2802,7 +2804,7 @@ def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
     if mode not in allowed_modes:
         raise HTTPException(
             status_code=400,
-            detail="mode ??? authorize_and_push / push_only / push_sub2api / probe_only / refresh_only / oauth_only",
+            detail="mode 仅支持 authorize_and_push / push_only / push_sub2api / probe_only / refresh_only / oauth_only",
         )
 
     cloud_error = _validate_cpa_cloud_config(mode)
@@ -2837,7 +2839,7 @@ def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
                 rejected.append({
                     "id": account_id,
                     "email": email,
-                    "reason": "??????? CPA ???????????",
+                    "reason": "缺少已生成的 CPA 授权文件，无法仅推送",
                 })
                 continue
         elif mode in {"probe_only", "refresh_only"}:
@@ -2847,14 +2849,14 @@ def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
                 rejected.append({
                     "id": account_id,
                     "email": email,
-                    "reason": "???? SSO ???????????",
+                    "reason": "缺少 SSO 且无 CPA 文件，无法测活",
                 })
                 continue
             if mode == "refresh_only" and not has_file and not sso:
                 rejected.append({
                     "id": account_id,
                     "email": email,
-                    "reason": "????????? SSO?????",
+                    "reason": "缺少 CPA 文件且无 SSO，无法续期",
                 })
                 continue
         elif mode == "oauth_only":
@@ -2863,7 +2865,7 @@ def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
                 rejected.append({
                     "id": account_id,
                     "email": email,
-                    "reason": "??????? SSO??? OAuth ??",
+                    "reason": "缺少邮箱或 SSO，无法执行 OAuth",
                 })
                 continue
         else:
@@ -2873,7 +2875,7 @@ def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
                 rejected.append({
                     "id": account_id,
                     "email": email,
-                    "reason": "?????????? SSO????? CPA ??",
+                    "reason": "缺少邮箱/密码/SSO，无法执行 CPA 授权",
                 })
                 continue
         candidates.append((account_id, email))
@@ -3911,11 +3913,11 @@ def oauth_account(account_id: int) -> dict[str, Any]:
         # if already busy with same account, still try direct? reject
         reason = ""
         if result["skipped"]:
-            reason = result["skipped"][0].get("reason") or "??????????"
+            reason = result["skipped"][0].get("reason") or "任务已在队列或执行中"
         elif result["rejected"]:
-            reason = result["rejected"][0].get("reason") or "??????"
+            reason = result["rejected"][0].get("reason") or "请求被拒绝"
         else:
-            reason = "??????"
+            reason = "未能入队"
         raise HTTPException(status_code=409 if result["skipped"] else 400, detail=reason)
     return {"ok": True, "status": "queued", "account_id": account_id, "queue": result.get("queue")}
 
@@ -3924,10 +3926,10 @@ def oauth_account(account_id: int) -> dict[str, Any]:
 def batch_account_maintain(payload: AccountMaintainBatch) -> dict[str, Any]:
     mode = (payload.mode or "probe_only").strip()
     if mode not in {"probe_only", "refresh_only", "oauth_only"}:
-        raise HTTPException(status_code=400, detail="mode ??? probe_only / refresh_only / oauth_only")
+        raise HTTPException(status_code=400, detail="mode 仅支持 probe_only / refresh_only / oauth_only")
     ids = [int(x) for x in (payload.account_ids or []) if int(x) > 0]
     if not ids:
-        raise HTTPException(status_code=400, detail="account_ids ????")
+        raise HTTPException(status_code=400, detail="account_ids 不能为空")
     # probe/refresh can run concurrent-ish but reuse CPA queue for backpressure & UI progress
     return enqueue_cpa_jobs(ids, mode)
 

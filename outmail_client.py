@@ -1315,15 +1315,15 @@ def outmail_mark_mailbox_used(mailbox, register_email="", reason="success", log_
                 counts[mb] = prev
             _outmail_used_cache = counts
             if log_callback:
-                log_callback(f"[Debug] ????????: {exc}")
+                log_callback(f"[Debug] 写入已用邮箱失败: {exc}")
             return False
     if log_callback:
         if new_n >= limit:
             log_callback(
-                f"[Debug] Outmail ????????? {new_n}/{limit}?????: {mb}"
+                f"[Debug] Outmail 主邮箱已达使用上限 {new_n}/{limit}，标记用尽: {mb}"
             )
         else:
-            msg = f"[Debug] Outmail ??????? {new_n}/{limit}: {mb}"
+            msg = f"[Debug] Outmail 已记录使用次数 {new_n}/{limit}: {mb}"
             if reg:
                 msg += f" (alias={reg})"
             log_callback(msg)
