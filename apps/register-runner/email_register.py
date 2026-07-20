@@ -104,19 +104,26 @@ _ORIG_PRINT = print
 
 
 def _stamp_message(message: object) -> str:
+    """Prefix a single log line with local time; skip if already stamped."""
     text = str(message)
-    if not text:
+    if not text.strip():
         return text
     head = text.lstrip()
     if re.match(r"^\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}", head):
         return text
     if re.match(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}", head):
         return text
+    # use module-specific now() filled per file
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return f"[{ts}] {text}"
+    # preserve original leading whitespace/newlines outside the stamped body
+    lead_len = len(text) - len(text.lstrip(" \t"))
+    lead = text[:lead_len]
+    core = text[lead_len:]
+    return f"{lead}[{ts}] {core}"
 
 
 def print(*args, **kwargs):  # type: ignore[no-redef]
+    """Timestamp each non-empty line; never attach time to a bare newline-only prefix."""
     if not args:
         return _ORIG_PRINT(*args, **kwargs)
     sep = kwargs.get("sep", " ")
@@ -124,8 +131,20 @@ def print(*args, **kwargs):  # type: ignore[no-redef]
         body = sep.join(str(a) for a in args)
     except Exception:
         body = " ".join(map(str, args))
-    stamped = _stamp_message(body)
-    return _ORIG_PRINT(stamped, **{k: v for k, v in kwargs.items() if k != "sep"})
+    if "\n" in body or "\r" in body:
+        parts = re.split(r"(\r?\n)", body)
+        out = []
+        for part in parts:
+            if part in ("\n", "\r\n", "\r") or part == "":
+                out.append(part)
+            else:
+                out.append(_stamp_message(part))
+        stamped = "".join(out)
+    else:
+        stamped = _stamp_message(body)
+    kw = {k: v for k, v in kwargs.items() if k != "sep"}
+    return _ORIG_PRINT(stamped, **kw)
+
 
 
 def get_email_provider() -> str:

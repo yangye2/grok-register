@@ -23,33 +23,47 @@ _ORIG_PRINT = print
 
 
 def _stamp_message(message: object) -> str:
-    """Prefix plain console lines with local time so console.log always shows when events happen."""
+    """Prefix a single log line with local time; skip if already stamped."""
     text = str(message)
-    if not text:
+    if not text.strip():
         return text
-    # Already stamped: [YYYY-MM-DD HH:MM:SS] or logging-style "YYYY-MM-DD HH:MM:SS |"
     head = text.lstrip()
     if re.match(r"^\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}", head):
         return text
     if re.match(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}", head):
         return text
+    # use module-specific now() filled per file
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return f"[{ts}] {text}"
+    # preserve original leading whitespace/newlines outside the stamped body
+    lead_len = len(text) - len(text.lstrip(" \t"))
+    lead = text[:lead_len]
+    core = text[lead_len:]
+    return f"{lead}[{ts}] {core}"
 
 
 def print(*args, **kwargs):  # type: ignore[no-redef]
-    """Drop-in print with timestamp prefix for task console readability."""
+    """Timestamp each non-empty line; never attach time to a bare newline-only prefix."""
     if not args:
         return _ORIG_PRINT(*args, **kwargs)
-    # Preserve multi-arg print semantics for non-first parts; stamp first rendered message.
     sep = kwargs.get("sep", " ")
     try:
         body = sep.join(str(a) for a in args)
     except Exception:
         body = " ".join(map(str, args))
-    stamped = _stamp_message(body)
-    # Re-print as single string so timestamp only appears once.
-    return _ORIG_PRINT(stamped, **{k: v for k, v in kwargs.items() if k != "sep"})
+    if "\n" in body or "\r" in body:
+        parts = re.split(r"(\r?\n)", body)
+        out = []
+        for part in parts:
+            if part in ("\n", "\r\n", "\r") or part == "":
+                out.append(part)
+            else:
+                out.append(_stamp_message(part))
+        stamped = "".join(out)
+    else:
+        stamped = _stamp_message(body)
+    kw = {k: v for k, v in kwargs.items() if k != "sep"}
+    return _ORIG_PRINT(stamped, **kw)
+
 
 
 
@@ -784,16 +798,74 @@ def refresh_active_page():
     return page
 
 
+
+def _is_page_refresh_error(exc: BaseException) -> bool:
+    msg = str(exc or "")
+    return (
+        "页面已被刷新" in msg
+        or "page has been refreshed" in msg.lower()
+        or "context" in msg.lower() and "destroy" in msg.lower()
+        or "disconnected" in msg.lower()
+    )
+
+
+def safe_run_js(script, *args, retries: int = 3, **kwargs):
+    """run_js with refresh-page recovery (DrissionPage context-lost after navigation)."""
+    global page
+    last_exc = None
+    for attempt in range(max(1, retries)):
+        try:
+            refresh_active_page()
+            return page.run_js(script, *args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if not _is_page_refresh_error(exc) and attempt + 1 >= retries:
+                break
+            try:
+                refresh_active_page()
+            except Exception:
+                try:
+                    restart_browser()
+                except Exception:
+                    pass
+            time.sleep(0.4 + 0.3 * attempt)
+    if last_exc is not None:
+        raise last_exc
+    return None
+
+
 def open_signup_page():
     # 每轮开始时打开注册页，并切到“使用邮箱注册”流程。
     global page
-    refresh_active_page()
-    try:
-        page.get(SIGNUP_URL)
-    except Exception:
-        refresh_active_page()
-        page = browser.new_tab(SIGNUP_URL)
-    click_email_signup_button()
+    last_exc = None
+    for attempt in range(3):
+        try:
+            refresh_active_page()
+            try:
+                page.get(SIGNUP_URL)
+            except Exception:
+                refresh_active_page()
+                page = browser.new_tab(SIGNUP_URL)
+            # 等待文档与基础 DOM 就绪，避免立刻 run_js 触发“页面已被刷新”
+            try:
+                page.wait.doc_loaded(timeout=15)
+            except Exception:
+                time.sleep(1.2)
+            time.sleep(random.uniform(0.45, 0.9))
+            refresh_active_page()
+            click_email_signup_button()
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            print(f"[Warn] open_signup_page attempt {attempt + 1}/3 failed: {exc}")
+            try:
+                stop_browser()
+                start_browser()
+            except Exception:
+                restart_browser()
+            time.sleep(0.8 + 0.4 * attempt)
+    if last_exc is not None:
+        raise last_exc
 
 
 def close_current_page():
@@ -871,7 +943,7 @@ def click_email_signup_button(timeout=10):
     # 页面打开后，自动点击“使用邮箱注册”按钮。
     deadline = time.time() + timeout
     while time.time() < deadline:
-        clicked = page.run_js(r"""
+        clicked = safe_run_js(r"""
 const candidates = Array.from(document.querySelectorAll('button, a, [role="button"]'));
 const target = candidates.find((node) => {
     const text = (node.innerText || node.textContent || '').replace(/\s+/g, '').toLowerCase();
@@ -902,7 +974,7 @@ def fill_email_and_submit(timeout=15):
 
     deadline = time.time() + timeout
     while time.time() < deadline:
-        filled = page.run_js(
+        filled = safe_run_js(
             """
 const email = arguments[0];
 
@@ -2128,8 +2200,23 @@ def main():
                 break
             except Exception as error:
                 print(f"[Error] 第 {current_round} 轮失败: {error}")
+                if _is_page_refresh_error(error):
+                    # 软重启可能仍挂着坏 page 句柄，整浏览器重建更稳
+                    try:
+                        stop_browser()
+                        start_browser()
+                    except Exception:
+                        pass
             finally:
-                restart_browser()
+                # 成功后仍做轻量清理；失败且已 hard-restart 时 restart 也安全
+                try:
+                    restart_browser()
+                except Exception:
+                    try:
+                        stop_browser()
+                        start_browser()
+                    except Exception:
+                        pass
 
             if args.count == 0 or current_round < args.count:
                 time.sleep(random.uniform(1.400, 2.700))
