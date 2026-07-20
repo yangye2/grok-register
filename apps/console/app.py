@@ -283,6 +283,8 @@ def init_db() -> None:
             ("last_renew_at", "TEXT"),
             ("grok2", "INTEGER NOT NULL DEFAULT 0"),
             ("grok2_updated_at", "TEXT"),
+            ("h5", "INTEGER NOT NULL DEFAULT 0"),
+            ("h5_updated_at", "TEXT"),
         ):
             if name not in columns:
                 conn.execute(f"ALTER TABLE accounts ADD COLUMN {name} {definition}")
@@ -1616,6 +1618,8 @@ def serialize_account(row: sqlite3.Row) -> dict[str, Any]:
         "last_renew_at": row_get(row, "last_renew_at", "") or "",
         "grok2": bool(row_get(row, "grok2", 0) or 0),
         "grok2_updated_at": row_get(row, "grok2_updated_at", "") or "",
+        "h5": bool(row_get(row, "h5", 0) or 0),
+        "h5_updated_at": row_get(row, "h5_updated_at", "") or "",
     }
 
 
@@ -3396,6 +3400,7 @@ def build_accounts_where_clause(
     sso_alive: str | None = None,
     sub2_status: str | None = None,
     grok2: str | None = None,
+    h5: str | None = None,
 ) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
@@ -3444,6 +3449,13 @@ def build_accounts_where_clause(
             clauses.append("COALESCE(grok2, 0) = 1")
         elif grok2_filter in {"0", "false", "no", "unmarked", "none"}:
             clauses.append("COALESCE(grok2, 0) = 0")
+
+    h5_filter = (h5 or "").strip().lower()
+    if h5_filter and h5_filter != "all":
+        if h5_filter in {"1", "true", "yes", "marked", "h5"}:
+            clauses.append("COALESCE(h5, 0) = 1")
+        elif h5_filter in {"0", "false", "no", "unmarked", "none"}:
+            clauses.append("COALESCE(h5, 0) = 0")
 
     if not clauses:
         return "", params
@@ -4143,13 +4155,14 @@ def list_accounts(
     sso_alive: str = Query(""),
     sub2_status: str = Query(""),
     grok2: str = Query(""),
+    h5: str = Query(""),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
 ) -> dict[str, Any]:
     sync_all_account_records()
     _heal_stale_busy_accounts()
     where_clause, where_params = build_accounts_where_clause(
-        task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive, sub2_status=sub2_status, grok2=grok2
+        task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive, sub2_status=sub2_status, grok2=grok2, h5=h5
     )
     count_row = fetch_one(
         f"SELECT COUNT(*) AS c FROM accounts{where_clause}",
@@ -4187,22 +4200,38 @@ class AccountGrok2BatchPayload(AccountIdsPayload):
     grok2: bool = True
 
 
-@app.post("/api/accounts/grok2/batch")
-def mark_accounts_grok2(payload: AccountGrok2BatchPayload) -> dict[str, Any]:
-    ids = sorted({int(x) for x in payload.account_ids if int(x) > 0})
+class AccountH5BatchPayload(AccountIdsPayload):
+    h5: bool = True
+
+
+def update_account_flag(account_ids: list[int], column: str, value: bool) -> int:
+    if column not in {"grok2", "h5"}:
+        raise HTTPException(status_code=400, detail="invalid flag")
+    ids = sorted({int(x) for x in account_ids if int(x) > 0})
     if not ids:
         raise HTTPException(status_code=400, detail="account_ids cannot be empty")
     placeholders = ",".join("?" for _ in ids)
-    value = 1 if payload.grok2 else 0
+    flag_value = 1 if value else 0
     now = now_iso()
     with db_lock, get_conn() as conn:
         cur = conn.execute(
-            f"UPDATE accounts SET grok2 = ?, grok2_updated_at = ? WHERE id IN ({placeholders})",
-            tuple([value, now] + ids),
+            f"UPDATE accounts SET {column} = ?, {column}_updated_at = ? WHERE id IN ({placeholders})",
+            tuple([flag_value, now] + ids),
         )
         conn.commit()
-        changed = int(cur.rowcount or 0)
-    return {"ok": True, "grok2": bool(value), "updated_count": changed}
+        return int(cur.rowcount or 0)
+
+
+@app.post("/api/accounts/grok2/batch")
+def mark_accounts_grok2(payload: AccountGrok2BatchPayload) -> dict[str, Any]:
+    changed = update_account_flag(payload.account_ids, "grok2", payload.grok2)
+    return {"ok": True, "grok2": bool(payload.grok2), "updated_count": changed}
+
+
+@app.post("/api/accounts/h5/batch")
+def mark_accounts_h5(payload: AccountH5BatchPayload) -> dict[str, Any]:
+    changed = update_account_flag(payload.account_ids, "h5", payload.h5)
+    return {"ok": True, "h5": bool(payload.h5), "updated_count": changed}
 
 
 @app.get("/api/accounts/ids")
@@ -4214,11 +4243,12 @@ def list_account_ids(
     sso_alive: str = Query(""),
     sub2_status: str = Query(""),
     grok2: str = Query(""),
+    h5: str = Query(""),
 ) -> dict[str, Any]:
     """Return all account ids matching current filters (for cross-page select-all)."""
     sync_all_account_records()
     where_clause, where_params = build_accounts_where_clause(
-        task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive, sub2_status=sub2_status, grok2=grok2
+        task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive, sub2_status=sub2_status, grok2=grok2, h5=h5
     )
     rows = fetch_all(
         f"SELECT id FROM accounts{where_clause} ORDER BY created_at DESC, id DESC",

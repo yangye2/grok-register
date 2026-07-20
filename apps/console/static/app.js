@@ -13,6 +13,7 @@
     accountTokenFilter: "all",
     accountSub2Filter: "all",
     accountGrok2Filter: "all",
+    accountH5Filter: "all",
     accountSsoFilter: "all",
     accountPage: 1,
     accountPageSize: 20,
@@ -60,6 +61,8 @@
   const accountsSub2apiPushBatchBtnEl = document.getElementById("accountsSub2apiPushBatchBtn");
   const accountsGrok2MarkBtnEl = document.getElementById("accountsGrok2MarkBtn");
   const accountsGrok2UnmarkBtnEl = document.getElementById("accountsGrok2UnmarkBtn");
+  const accountsH5MarkBtnEl = document.getElementById("accountsH5MarkBtn");
+  const accountsH5UnmarkBtnEl = document.getElementById("accountsH5UnmarkBtn");
   const accountsCpaCancelBtnEl = document.getElementById("accountsCpaCancelBtn");
   const accountsCpaExportBtnEl = document.getElementById("accountsCpaExportBtn");
   const accountsSelectFilteredBtnEl = document.getElementById("accountsSelectFilteredBtn");
@@ -84,6 +87,7 @@
   const accountsTokenFilterEl = document.getElementById("accountsTokenFilter");
   const accountsSub2FilterEl = document.getElementById("accountsSub2Filter");
   const accountsGrok2FilterEl = document.getElementById("accountsGrok2Filter");
+  const accountsH5FilterEl = document.getElementById("accountsH5Filter");
   const accountsSsoFilterEl = document.getElementById("accountsSsoFilter");
   const accountsPageSizeEl = document.getElementById("accountsPageSize");
   const accountsPageMetaEl = document.getElementById("accountsPageMeta");
@@ -735,11 +739,11 @@
     return "tone-mute";
   }
 
-  function grok2Label(value) {
-    return value ? "Grok2" : "-";
+  function flagLabel(value) {
+    return value ? "已支持" : "未支持";
   }
 
-  function grok2Tone(value) {
+  function flagTone(value) {
     return value ? "tone-ok" : "tone-mute";
   }
 
@@ -765,6 +769,9 @@
     }
     if (state.accountGrok2Filter && state.accountGrok2Filter !== "all") {
       params.set("grok2", state.accountGrok2Filter);
+    }
+    if (state.accountH5Filter && state.accountH5Filter !== "all") {
+      params.set("h5", state.accountH5Filter);
     }
     if (state.accountSsoFilter && state.accountSsoFilter !== "all") {
       params.set("sso_alive", state.accountSsoFilter);
@@ -886,6 +893,8 @@ function isCpaBusy(account) {
     if (accountsSub2apiPushBatchBtnEl) accountsSub2apiPushBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsGrok2MarkBtnEl) accountsGrok2MarkBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsGrok2UnmarkBtnEl) accountsGrok2UnmarkBtnEl.disabled = state.selectedAccountIds.size === 0;
+    if (accountsH5MarkBtnEl) accountsH5MarkBtnEl.disabled = state.selectedAccountIds.size === 0;
+    if (accountsH5UnmarkBtnEl) accountsH5UnmarkBtnEl.disabled = state.selectedAccountIds.size === 0;
     const pageIds = state.accounts.map((account) => account.id);
     const pageSelectedCount = pageIds.filter((id) => state.selectedAccountIds.has(id)).length;
     accountsSelectAllEl.checked = pageIds.length > 0 && pageSelectedCount === pageIds.length;
@@ -922,7 +931,8 @@ function isCpaBusy(account) {
         <td class="account-token-status">${statusPill(tokenStatusLabel(account.token_status), tokenStatusTone(account.token_status), account.token_error || account.last_renew_source || "")}</td>
         <td class="account-cpa-status">${statusPill(cpaStatusLabel(account.cpa_status), cpaStatusTone(account.cpa_status), account.cpa_error || account.cpa_path || "")}</td>
         <td class="account-sub2-status">${statusPill(sub2StatusLabel(account.sub2_status), sub2StatusTone(account.sub2_status), account.sub2_error || account.sub2_uploaded_at || "")}</td>
-        <td class="account-grok2-status">${statusPill(grok2Label(account.grok2), grok2Tone(account.grok2), account.grok2_updated_at || "")}</td>
+        <td class="account-grok2-status">${statusPill(flagLabel(account.grok2), flagTone(account.grok2), account.grok2_updated_at || "")}</td>
+        <td class="account-h5-status">${statusPill(flagLabel(account.h5), flagTone(account.h5), account.h5_updated_at || "")}</td>
         <td title="${escapeHtml(account.token_checked_at || "")}">${escapeHtml(account.token_expires_at || "-")}</td>
         <td class="account-actions">
           <button class="button button-small button-warn" type="button" data-refresh-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""} title="优先 RT 续期">续期</button>
@@ -1698,22 +1708,23 @@ async function startBatchCpa(mode) {
   if (accountsCpaPushBatchBtnEl) {
     accountsCpaPushBatchBtnEl.addEventListener("click", () => startBatchCpa("push_only"));
   }
-  async function markSelectedGrok2(grok2) {
+  async function markSelectedFlag(flagName, value) {
     const ids = Array.from(state.selectedAccountIds);
     if (!ids.length) {
-      accountsMetaEl.textContent = "Please select accounts first";
+      accountsMetaEl.textContent = "请先选择账号";
       return;
     }
+    const label = flagName === "h5" ? "H5" : "Grok2";
     try {
-      const data = await fetchJson("/api/accounts/grok2/batch", {
+      const data = await fetchJson(`/api/accounts/${flagName}/batch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ account_ids: ids, grok2 }),
+        body: JSON.stringify({ account_ids: ids, [flagName]: value }),
       });
-      accountsMetaEl.textContent = `${grok2 ? "Marked" : "Unmarked"} Grok2: ${data.updated_count || 0} accounts`;
+      accountsMetaEl.textContent = `${label} ${value ? "已标记支持" : "已取消支持"}：${data.updated_count || 0} 个账号`;
       await refreshAccounts();
     } catch (error) {
-      accountsMetaEl.textContent = `Grok2 mark failed: ${error.message}`;
+      accountsMetaEl.textContent = `${label} 标记失败: ${error.message}`;
     }
   }
 
@@ -1721,11 +1732,18 @@ async function startBatchCpa(mode) {
     accountsSub2apiPushBatchBtnEl.addEventListener("click", () => startBatchCpa("push_sub2api"));
   }
   if (accountsGrok2MarkBtnEl) {
-    accountsGrok2MarkBtnEl.addEventListener("click", () => markSelectedGrok2(true));
+    accountsGrok2MarkBtnEl.addEventListener("click", () => markSelectedFlag("grok2", true));
   }
   if (accountsGrok2UnmarkBtnEl) {
-    accountsGrok2UnmarkBtnEl.addEventListener("click", () => markSelectedGrok2(false));
-  }  if (accountsCpaCancelBtnEl) {
+    accountsGrok2UnmarkBtnEl.addEventListener("click", () => markSelectedFlag("grok2", false));
+  }
+  if (accountsH5MarkBtnEl) {
+    accountsH5MarkBtnEl.addEventListener("click", () => markSelectedFlag("h5", true));
+  }
+  if (accountsH5UnmarkBtnEl) {
+    accountsH5UnmarkBtnEl.addEventListener("click", () => markSelectedFlag("h5", false));
+  }
+  if (accountsCpaCancelBtnEl) {
     accountsCpaCancelBtnEl.addEventListener("click", async () => {
       if (!window.confirm("确认停止 CPA 队列？当前账号会跑完，剩余排队将取消。")) return;
       try {
@@ -1891,6 +1909,13 @@ accountsDownloadBtnEl.addEventListener("click", async () => {
   if (accountsGrok2FilterEl) {
     accountsGrok2FilterEl.addEventListener("change", () => {
       state.accountGrok2Filter = accountsGrok2FilterEl.value;
+      state.accountPage = 1;
+      refreshAccounts();
+    });
+  }
+  if (accountsH5FilterEl) {
+    accountsH5FilterEl.addEventListener("change", () => {
+      state.accountH5Filter = accountsH5FilterEl.value;
       state.accountPage = 1;
       refreshAccounts();
     });

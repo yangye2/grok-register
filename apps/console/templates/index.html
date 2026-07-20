@@ -135,9 +135,11 @@
               <div class="accounts-toolbar-group" title="推送与队列">
                 <button id="accountsCpaPushBatchBtn" class="button button-primary" type="button" disabled>批量推送 CPA</button>
                 <button id="accountsSub2apiPushBatchBtn" class="button button-purple" type="button" disabled>批量推送 Sub2API</button>
-                <button id="accountsGrok2MarkBtn" class="button button-info" type="button" disabled>Grok2</button>
-                <button id="accountsGrok2UnmarkBtn" class="button button-neutral" type="button" disabled>Clear Grok2</button>
-                <button id="accountsCpaCancelBtn" class="button button-danger" type="button" disabled>停止队列</button>
+                <button id="accountsGrok2MarkBtn" class="button button-info" type="button" disabled>标记 Grok2</button>
+                <button id="accountsGrok2UnmarkBtn" class="button button-neutral" type="button" disabled>取消 Grok2</button>
+                <button id="accountsH5MarkBtn" class="button button-info" type="button" disabled>标记 H5</button>
+                <button id="accountsH5UnmarkBtn" class="button button-neutral" type="button" disabled>取消 H5</button>
+<button id="accountsCpaCancelBtn" class="button button-danger" type="button" disabled>停止队列</button>
               </div>
               <span class="accounts-toolbar-sep" aria-hidden="true"></span>
               <div class="accounts-toolbar-group" title="导出与删除">
@@ -210,9 +212,17 @@
             <label class="filter-field narrow">
               <span class="meta-label">Grok2</span>
               <select id="accountsGrok2Filter">
-                <option value="all">All</option>
-                <option value="1">Marked</option>
-                <option value="0">Unmarked</option>
+                <option value="all">全部</option>
+                <option value="1">已支持</option>
+                <option value="0">未支持</option>
+              </select>
+            </label>
+            <label class="filter-field narrow">
+              <span class="meta-label">H5</span>
+              <select id="accountsH5Filter">
+                <option value="all">全部</option>
+                <option value="1">已支持</option>
+                <option value="0">未支持</option>
               </select>
             </label>
             <label class="filter-field">
@@ -257,6 +267,7 @@
                   <th>CPA</th>
                   <th>Sub2</th>
                   <th>Grok2</th>
+                  <th>H5</th>
                   <th>过期时间</th>
                   <th>操作</th>
                 </tr>

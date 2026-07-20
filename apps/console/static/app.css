@@ -506,7 +506,7 @@ button {
 .accounts-table-wrap {
   border: 1px solid var(--line);
   border-radius: 14px;
-  overflow-x: hidden;
+  overflow-x: auto;
   overflow-y: auto;
   background: var(--panel-strong);
   width: 100%;
@@ -535,10 +535,10 @@ button {
 }
 
 .accounts-table {
-  width: 100%;
+  width: max-content;
+  min-width: 1380px;
   border-collapse: collapse;
   table-layout: fixed;
-  min-width: 0;
 }
 
 .accounts-table th,
@@ -564,7 +564,7 @@ button {
 
 .accounts-table tbody tr:last-child td { border-bottom: 0; }
 
-/* 1 select | 2 email | 3 password | 4 sso | 5 created | 6 SSO alive | 7 Token | 8 CPA | 9 Sub2 | 10 Grok2 | 11 expire | 12 actions */
+/* 1 select | 2 email | 3 password | 4 sso | 5 created | 6 SSO alive | 7 Token | 8 CPA | 9 Sub2 | 10 Grok2 | 11 H5 | 12 expire | 13 actions */
 .select-col,
 .accounts-table th:nth-child(1),
 .accounts-table td:nth-child(1) {
@@ -577,16 +577,16 @@ button {
 }
 
 .accounts-table th:nth-child(2),
-.accounts-table td:nth-child(2) { width: 14%; } /* email */
+.accounts-table td:nth-child(2) { width: 190px; } /* email */
 
 .accounts-table th:nth-child(3),
-.accounts-table td:nth-child(3) { width: 9%; } /* password */
+.accounts-table td:nth-child(3) { width: 120px; } /* password */
 
 .accounts-table th:nth-child(4),
-.accounts-table td:nth-child(4) { width: 11%; } /* sso */
+.accounts-table td:nth-child(4) { width: 130px; } /* sso */
 
 .accounts-table th:nth-child(5),
-.accounts-table td:nth-child(5) { width: 10%; } /* created */
+.accounts-table td:nth-child(5) { width: 150px; } /* created */
 
 .accounts-table th:nth-child(6),
 .accounts-table td:nth-child(6),
@@ -595,19 +595,23 @@ button {
 .accounts-table th:nth-child(8),
 .accounts-table td:nth-child(8),
 .accounts-table th:nth-child(9),
-.accounts-table td:nth-child(9) {
-  width: 7%;
-  min-width: 52px;
-} /* SSO alive / Token / CPA / Sub2 - same band */
-
+.accounts-table td:nth-child(9),
 .accounts-table th:nth-child(10),
-.accounts-table td:nth-child(10) { width: 10%; } /* expire */
-
+.accounts-table td:nth-child(10),
 .accounts-table th:nth-child(11),
 .accounts-table td:nth-child(11) {
-  width: 180px;
-  min-width: 170px;
-  max-width: 200px;
+  width: 88px;
+  min-width: 88px;
+} /* SSO alive / Token / CPA / Sub2 / Grok2 / H5 */
+
+.accounts-table th:nth-child(12),
+.accounts-table td:nth-child(12) { width: 150px; } /* expire */
+
+.accounts-table th:nth-child(13),
+.accounts-table td:nth-child(13) {
+  width: 210px;
+  min-width: 210px;
+  max-width: 230px;
   overflow: visible;
   white-space: nowrap;
   text-overflow: clip;
@@ -1354,6 +1358,7 @@ html[data-theme="dark"] .settings-save-bar {
 .account-cpa-status,
 .account-sub2-status,
 .account-grok2-status,
+.account-h5-status,
 .account-token-status,
 .account-sso-alive {
   max-width: none;
