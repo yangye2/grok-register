@@ -848,11 +848,22 @@ def open_signup_page():
                 page = browser.new_tab(SIGNUP_URL)
             # 等待文档与基础 DOM 就绪，避免立刻 run_js 触发“页面已被刷新”
             try:
-                page.wait.doc_loaded(timeout=15)
+                page.wait.doc_loaded(timeout=20)
             except Exception:
-                time.sleep(1.2)
-            time.sleep(random.uniform(0.45, 0.9))
+                time.sleep(1.5)
+            # SPA / Cloudflare / 代理首屏可能较慢
+            time.sleep(random.uniform(1.0, 1.8))
             refresh_active_page()
+            # 若被拦在挑战页，再等一会
+            try:
+                title = str(page.title or "")
+                url_now = str(getattr(page, "url", "") or "")
+                if any(x in (title + url_now).lower() for x in ("just a moment", "cloudflare", "attention required", "cf-chl")):
+                    print(f"[Warn] 疑似挑战页 title={title!r} url={url_now}")
+                    time.sleep(5.0)
+                    refresh_active_page()
+            except Exception:
+                pass
             click_email_signup_button()
             return
         except Exception as exc:  # noqa: BLE001
@@ -939,31 +950,153 @@ return !!(
     except Exception:
         return False
 
-def click_email_signup_button(timeout=10):
-    # 页面打开后，自动点击“使用邮箱注册”按钮。
+def click_email_signup_button(timeout=30):
+    """Open email signup path; no-op if email input already visible."""
     deadline = time.time() + timeout
+    last_debug = ""
     while time.time() < deadline:
-        clicked = safe_run_js(r"""
-const candidates = Array.from(document.querySelectorAll('button, a, [role="button"]'));
-const target = candidates.find((node) => {
-    const text = (node.innerText || node.textContent || '').replace(/\s+/g, '').toLowerCase();
-    return text.includes('使用邮箱注册') || text.includes('signupwithemail') || text.includes('signupemail') || text.includes('continuewith email') || text.includes('email');
-});
-
-if (!target) {
-    return false;
+        raw = safe_run_js(
+            r"""
+function isVisible(node) {
+  if (!node) return false;
+  try {
+    const style = window.getComputedStyle(node);
+    if (!style) return false;
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    if (Number(style.opacity) === 0) return false;
+  } catch (e) { return false; }
+  const rect = node.getBoundingClientRect();
+  // allow nearly-visible nodes (animations / layout)
+  return rect.width >= 1 && rect.height >= 1;
 }
 
-target.click();
-return true;
-        """)
+function nodeText(node) {
+  if (!node) return '';
+  const bits = [
+    node.innerText,
+    node.textContent,
+    node.getAttribute && node.getAttribute('aria-label'),
+    node.getAttribute && node.getAttribute('title'),
+    node.getAttribute && node.getAttribute('value'),
+  ];
+  return String(bits.filter(Boolean).join(' ')).replace(/\s+/g, ' ').trim();
+}
 
-        if clicked:
+function compact(s) {
+  return String(s || '').replace(/\s+/g, '').toLowerCase();
+}
+
+const emailInput = Array.from(document.querySelectorAll(
+  'input[type="email"], input[name="email"], input[data-testid="email"], input[autocomplete="email"], input[inputmode="email"]'
+)).find((n) => isVisible(n) && !n.disabled);
+if (emailInput) {
+  return JSON.stringify({ ok: true, reason: 'already-email-input' });
+}
+
+const candidates = Array.from(document.querySelectorAll(
+  'button, a, [role="button"], [data-testid], div[tabindex="0"], span[role="button"]'
+));
+
+function score(node) {
+  const raw = nodeText(node);
+  const t = compact(raw);
+  const testid = compact((node.getAttribute && node.getAttribute('data-testid')) || '');
+  const href = compact((node.getAttribute && node.getAttribute('href')) || '');
+  const aria = compact((node.getAttribute && node.getAttribute('aria-label')) || '');
+  let s = 0;
+  if (!t && !testid && !aria) return -1;
+
+  if (t.includes('使用邮箱注册') || t.includes('邮箱注册') || t.includes('用邮箱')) s += 100;
+  if (t.includes('signupwithemail')) s += 100;
+  if (t.includes('continuewithemail')) s += 100;
+  if (t.includes('registerwithemail')) s += 90;
+  if (t.includes('signupwith') && t.includes('email')) s += 90;
+  if (t.includes('continuewith') && t.includes('email')) s += 90;
+  if (/sign\s*up\s*with\s*email/i.test(raw)) s += 100;
+  if (/continue\s*with\s*email/i.test(raw)) s += 100;
+  if (/with\s*email/i.test(raw) && /sign|register|continue|create/i.test(raw)) s += 80;
+  if (testid.includes('email') && (testid.includes('sign') || testid.includes('signup') || testid.includes('register') || testid.includes('continue'))) s += 90;
+  if (href.includes('email') && (href.includes('sign') || href.includes('signup'))) s += 70;
+  if (t === 'email' || t === '邮箱' || t === 'e-mail' || t === 'useemail') s += 60;
+  if (t.includes('email') && t.length <= 28 && !t.includes('google') && !t.includes('apple') && !t.includes('github') && !t.includes('microsoft')) s += 45;
+
+  if (t.includes('google') || t.includes('apple') || t.includes('github') || t.includes('microsoft') || t.includes('sso')) s -= 100;
+  if ((t.includes('signin') || t.includes('login')) && !t.includes('email')) s -= 30;
+  if (!isVisible(node)) s -= 15;
+  return s;
+}
+
+let best = null;
+let bestScore = 0;
+for (const node of candidates) {
+  const sc = score(node);
+  if (sc > bestScore) {
+    bestScore = sc;
+    best = node;
+  }
+}
+
+if (best && bestScore >= 40) {
+  try { best.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
+  try { best.click(); } catch (e) {
+    try {
+      best.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    } catch (e2) {}
+  }
+  return JSON.stringify({ ok: true, reason: 'clicked', text: nodeText(best), score: bestScore });
+}
+
+const sample = candidates.slice(0, 40).map((n) => {
+  const tag = (n.tagName || '').toLowerCase();
+  const t = nodeText(n).slice(0, 100);
+  const id = (n.getAttribute && n.getAttribute('data-testid')) || '';
+  return tag + (id ? '#' + id : '') + ':' + t;
+});
+return JSON.stringify({
+  ok: false,
+  url: location.href,
+  title: document.title || '',
+  candidateCount: candidates.length,
+  buttons: sample,
+  bodyHint: String(document.body && document.body.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 280)
+});
+"""
+        )
+
+        result = None
+        if isinstance(raw, dict):
+            result = raw
+        elif isinstance(raw, str) and raw.strip():
+            try:
+                result = json.loads(raw)
+            except Exception:
+                result = {"ok": False, "raw": raw[:500]}
+        elif raw is True:
+            return True
+        elif raw is False or raw is None:
+            result = {"ok": False, "raw": raw}
+
+        if isinstance(result, dict) and result.get("ok"):
+            reason = result.get("reason") or "ok"
+            if reason != "already-email-input":
+                print(f"[*] 已点击邮箱注册入口: {result.get('text') or reason} score={result.get('score')}")
+            # give SPA a moment to reveal email field
+            time.sleep(random.uniform(0.35, 0.7))
             return True
 
-        time.sleep(random.uniform(0.350, 0.675))
+        if isinstance(result, dict):
+            last_debug = (
+                f"url={result.get('url')} title={result.get('title')!r} "
+                f"count={result.get('candidateCount')} buttons={result.get('buttons')} "
+                f"hint={result.get('bodyHint')!r}"
+            )
+        else:
+            last_debug = f"raw={raw!r}"
 
-    raise Exception('未找到“使用邮箱注册”按钮')
+        time.sleep(random.uniform(0.5, 0.9))
+
+    print(f"[Warn] 邮箱注册入口未找到，页面快照: {last_debug}")
+    raise Exception("未找到“使用邮箱注册”按钮")
 
 
 def fill_email_and_submit(timeout=15):
