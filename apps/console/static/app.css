@@ -13,6 +13,7 @@
   --warn: #d97706;
   --danger: #dc2626;
   --shadow: 0 24px 70px rgba(15, 23, 42, 0.12);
+  color-scheme: light;
 }
 
 html[data-theme="dark"] {
@@ -30,6 +31,7 @@ html[data-theme="dark"] {
   --warn: #fbbf24;
   --danger: #f87171;
   --shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -54,6 +56,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -379,6 +382,21 @@ button {
   border-radius: 12px;
   padding: 10px 12px;
   background: var(--panel-strong);
+  color: var(--ink);
+}
+
+.task-form select,
+.filter-field select,
+.settings-grid select {
+  appearance: auto;
+  background-color: var(--panel-strong);
+  color: var(--ink);
+}
+
+.task-form select option,
+.filter-field select option,
+.settings-grid select option {
+  background-color: var(--panel-strong);
   color: var(--ink);
 }
 
@@ -1088,6 +1106,20 @@ button {
 .settings-grid textarea {
   width: 100%;
   box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: var(--panel-strong);
+  color: var(--ink);
+}
+
+.settings-grid input[type="text"]::placeholder,
+.settings-grid input[type="password"]::placeholder,
+.settings-grid input[type="number"]::placeholder,
+.settings-grid input:not([type])::placeholder,
+.settings-grid textarea::placeholder {
+  color: var(--muted);
+  opacity: 0.75;
 }
 
 .settings-grid label.checkbox-field {
