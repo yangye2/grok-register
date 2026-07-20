@@ -14,8 +14,288 @@ import re
 import secrets
 import string
 import sys
+import sqlite3
 
 from email_register import get_email_and_token, get_oai_code, cleanup_mailbox_if_needed
+
+
+_ORIG_PRINT = print
+
+
+def _stamp_message(message: object) -> str:
+    """Prefix plain console lines with local time so console.log always shows when events happen."""
+    text = str(message)
+    if not text:
+        return text
+    # Already stamped: [YYYY-MM-DD HH:MM:SS] or logging-style "YYYY-MM-DD HH:MM:SS |"
+    head = text.lstrip()
+    if re.match(r"^\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}", head):
+        return text
+    if re.match(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}", head):
+        return text
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return f"[{ts}] {text}"
+
+
+def print(*args, **kwargs):  # type: ignore[no-redef]
+    """Drop-in print with timestamp prefix for task console readability."""
+    if not args:
+        return _ORIG_PRINT(*args, **kwargs)
+    # Preserve multi-arg print semantics for non-first parts; stamp first rendered message.
+    sep = kwargs.get("sep", " ")
+    try:
+        body = sep.join(str(a) for a in args)
+    except Exception:
+        body = " ".join(map(str, args))
+    stamped = _stamp_message(body)
+    # Re-print as single string so timestamp only appears once.
+    return _ORIG_PRINT(stamped, **{k: v for k, v in kwargs.items() if k != "sep"})
+
+
+
+
+def _console_db_path() -> str:
+    """Resolve console.db path when launched by grok-register console."""
+    explicit = str(os.environ.get("GROK_CONSOLE_DB") or "").strip()
+    if explicit:
+        return explicit
+    runtime = str(os.environ.get("GROK_REGISTER_CONSOLE_RUNTIME") or "").strip()
+    if runtime:
+        return os.path.join(runtime, "console.db")
+    return ""
+
+
+def _console_task_context() -> tuple[int | None, str]:
+    raw = str(os.environ.get("GROK_TASK_ID") or "").strip()
+    if not raw:
+        return None, ""
+    try:
+        task_id = int(raw)
+    except ValueError:
+        return None, ""
+    task_name = str(os.environ.get("GROK_TASK_NAME") or "").strip() or f"task_{task_id}"
+    return task_id, task_name
+
+
+def _now_iso_local() -> str:
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _append_cpa_log_lines_conn(conn: sqlite3.Connection, account_id: int, messages: list[str]) -> None:
+    """Append register-time log lines into accounts.cpa_log (dedupe by message tail)."""
+    if not messages:
+        return
+    row = conn.execute("SELECT cpa_log FROM accounts WHERE id = ?", (account_id,)).fetchone()
+    existing = str((row[0] if row else "") or "")
+    lines = [x for x in existing.splitlines() if x.strip()]
+    existing_blob = "\n".join(lines)
+    for msg in messages:
+        msg = str(msg or "").strip()
+        if not msg:
+            continue
+        # strip leading timestamp for de-dupe comparison
+        bare = msg
+        if bare.startswith("[") and "]" in bare[:36]:
+            head = bare[1 : bare.find("]")]
+            if len(head) >= 19 and head[4:5] == "-" and head[7:8] == "-":
+                bare = bare[bare.find("]") + 1 :].strip()
+        if bare and bare in existing_blob:
+            continue
+        if not re.match(r"^\[(\*|Debug|Error|Warn(?:ing)?|Info|OK|Success|Fail(?:ed)?)\]", bare, re.I):
+            low = bare.lower()
+            if any(k in low for k in ("fail", "error", "exception", "traceback", "失败", "异常", "错误")):
+                bare = f"[Error] {bare}"
+            elif any(k in low for k in ("warn", "警告")):
+                bare = f"[Warn] {bare}"
+            else:
+                bare = f"[Info] {bare}"
+        stamped = f"[{_now_iso_local()}] {bare}"
+        lines.append(stamped)
+        existing_blob += "\n" + bare
+    kept = lines[-400:]
+    conn.execute(
+        "UPDATE accounts SET cpa_log = ?, cpa_updated_at = ? WHERE id = ?",
+        ("\n".join(kept), _now_iso_local(), account_id),
+    )
+
+
+def persist_account_to_console_db(account_record: dict, cpa_record: dict | None = None) -> int | None:
+    """Write/update registered account into console SQLite immediately (source of truth).
+
+    When GROK_TASK_ID / console db env are missing (standalone runner), this is a no-op.
+    Returns account id when written, else None.
+    """
+    db_path = _console_db_path()
+    task_id, task_name = _console_task_context()
+    if not db_path or task_id is None:
+        return None
+    if not isinstance(account_record, dict):
+        return None
+
+    email = str(account_record.get("email") or "").strip()
+    sso = str(account_record.get("sso") or "").strip()
+    if not email or not sso:
+        return None
+
+    given_name = str(account_record.get("given_name") or "")
+    family_name = str(account_record.get("family_name") or "")
+    password = str(account_record.get("password") or "")
+    created_at = str(account_record.get("created_at") or _now_iso_local())
+    source_file = str(account_record.get("source_file") or os.environ.get("GROK_ACCOUNT_OUTPUT") or "")
+    now = _now_iso_local()
+    cpa_record = cpa_record if isinstance(cpa_record, dict) else {}
+
+    try:
+        conn = sqlite3.connect(db_path, timeout=60)
+        conn.execute("PRAGMA busy_timeout=60000")
+        try:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO accounts (
+                    task_id, task_name, email, sso, given_name, family_name, password,
+                    source_file, created_at, imported_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    task_name,
+                    email,
+                    sso,
+                    given_name,
+                    family_name,
+                    password,
+                    source_file,
+                    created_at,
+                    now,
+                ),
+            )
+            # Keep latest password/name if row already existed
+            conn.execute(
+                """
+                UPDATE accounts
+                SET task_name = ?,
+                    given_name = CASE WHEN ? != '' THEN ? ELSE given_name END,
+                    family_name = CASE WHEN ? != '' THEN ? ELSE family_name END,
+                    password = CASE WHEN ? != '' THEN ? ELSE password END,
+                    source_file = CASE WHEN ? != '' THEN ? ELSE source_file END
+                WHERE task_id = ? AND email = ? AND sso = ?
+                """,
+                (
+                    task_name,
+                    given_name, given_name,
+                    family_name, family_name,
+                    password, password,
+                    source_file, source_file,
+                    task_id, email, sso,
+                ),
+            )
+
+            row = conn.execute(
+                "SELECT id FROM accounts WHERE task_id = ? AND email = ? AND sso = ?",
+                (task_id, email, sso),
+            ).fetchone()
+            if not row:
+                conn.commit()
+                return None
+            account_id = int(row[0])
+
+            if cpa_record:
+                if cpa_record.get("ok"):
+                    cpa_status = "uploaded" if cpa_record.get("cloud_uploaded") else "generated"
+                    cpa_error = str(cpa_record.get("error") or "")
+                elif cpa_record.get("skipped"):
+                    cpa_status = "not_started"
+                    cpa_error = str(cpa_record.get("reason") or "skipped")
+                elif cpa_record.get("queued"):
+                    cpa_status = "queued"
+                    cpa_error = str(cpa_record.get("error") or "")
+                else:
+                    cpa_status = "failed"
+                    cpa_error = str(cpa_record.get("error") or "")
+
+                existing = conn.execute(
+                    "SELECT cpa_status, cpa_uploaded_at FROM accounts WHERE id = ?",
+                    (account_id,),
+                ).fetchone()
+                existing_status = str((existing[0] if existing else "not_started") or "not_started")
+                can_update = (
+                    existing_status in {"not_started", "queued", "running", "failed"}
+                    or (existing_status == "generated" and cpa_status == "uploaded")
+                    or (existing_status == "uploaded" and cpa_status == "uploaded")
+                )
+                if can_update:
+                    uploaded_at = now if cpa_status == "uploaded" else str((existing[1] if existing else "") or "")
+                    cpa_path = str(cpa_record.get("path") or cpa_record.get("cpa_path") or "")
+                    conn.execute(
+                        """
+                        UPDATE accounts
+                        SET cpa_status = ?, cpa_path = ?, cpa_uploaded_at = ?, cpa_error = ?, cpa_updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (cpa_status, cpa_path, uploaded_at, cpa_error, now, account_id),
+                    )
+
+                    token_status = str(cpa_record.get("token_status") or "").strip()
+                    live = cpa_record.get("liveness") if isinstance(cpa_record.get("liveness"), dict) else {}
+                    if not token_status:
+                        if live.get("alive") is True:
+                            token_status = "alive"
+                        elif live.get("alive") is False:
+                            token_status = "dead"
+                    sso_alive_raw = cpa_record.get("sso_alive")
+                    if sso_alive_raw is None and isinstance(live.get("sso"), dict):
+                        sso_alive_raw = live.get("sso", {}).get("alive")
+                    if sso_alive_raw is True or sso_alive_raw == 1 or sso_alive_raw == "1":
+                        sso_alive_i = 1
+                    elif sso_alive_raw is False or sso_alive_raw == 0 or sso_alive_raw == "0":
+                        sso_alive_i = 0
+                    else:
+                        sso_alive_i = None
+                    renew_src = str(cpa_record.get("mode") or "").strip()
+                    if token_status or sso_alive_i is not None or renew_src:
+                        conn.execute(
+                            """
+                            UPDATE accounts
+                            SET token_status = CASE WHEN ? != '' THEN ? ELSE token_status END,
+                                token_checked_at = CASE WHEN ? != '' THEN ? ELSE token_checked_at END,
+                                token_error = CASE WHEN ? != '' THEN ? ELSE token_error END,
+                                sso_alive = COALESCE(?, sso_alive),
+                                last_renew_source = CASE WHEN ? != '' THEN ? ELSE last_renew_source END,
+                                last_renew_at = CASE WHEN ? != '' THEN ? ELSE last_renew_at END
+                            WHERE id = ?
+                            """,
+                            (
+                                token_status, token_status,
+                                token_status, now,
+                                cpa_error, cpa_error,
+                                sso_alive_i,
+                                renew_src, renew_src,
+                                renew_src, now,
+                                account_id,
+                            ),
+                        )
+
+                log_lines: list[str] = []
+                raw_lines = cpa_record.get("log_lines")
+                if isinstance(raw_lines, list):
+                    log_lines.extend(str(x).strip() for x in raw_lines if str(x).strip())
+                summary = (
+                    f"[register-cpa] ok={bool(cpa_record.get('ok'))} "
+                    f"mode={cpa_record.get('mode') or '-'} "
+                    f"token={cpa_record.get('token_status') or '-'} "
+                    f"sso_alive={cpa_record.get('sso_alive')} "
+                    f"path={cpa_record.get('path') or cpa_record.get('cpa_path') or '-'}"
+                )
+                log_lines.append(summary)
+                _append_cpa_log_lines_conn(conn, account_id, log_lines)
+
+            conn.commit()
+            return account_id
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(f"[Warn] 写入控制台数据库失败(账号仍会写文件备份): {exc}", flush=True)
+        return None
 
 
 def load_cpa_config() -> dict:
@@ -1653,7 +1933,9 @@ def wait_for_sso_cookie(timeout=30):
 
 
 def append_sso_to_txt(sso_value, output_path=DEFAULT_SSO_FILE):
-    # 按用户要求，一行写一个 sso 值，持续追加。
+    # 可选备份：Console 下默认跳过 sso txt（账号以 DB 为准）。GROK_WRITE_SSO_TXT=1 可强制写。
+    if _console_task_context()[0] is not None and str(os.environ.get("GROK_WRITE_SSO_TXT") or "").strip().lower() not in {"1", "true", "yes"}:
+        return
     normalized = str(sso_value or "").strip()
     if not normalized:
         raise Exception("待写入的 sso 为空")
@@ -1662,7 +1944,6 @@ def append_sso_to_txt(sso_value, output_path=DEFAULT_SSO_FILE):
     with open(output_path, "a", encoding="utf-8") as file:
         file.write(normalized + "\n")
 
-    print(f"[*] 已追加写入 sso 到文件: {output_path}")
 
 
 def append_account_to_jsonl(account_record: dict, output_path=DEFAULT_ACCOUNT_FILE):
@@ -1673,7 +1954,6 @@ def append_account_to_jsonl(account_record: dict, output_path=DEFAULT_ACCOUNT_FI
     with open(output_path, "a", encoding="utf-8") as file:
         file.write(json.dumps(account_record, ensure_ascii=False, separators=(",", ":")) + "\n")
 
-    print(f"[*] 已写入账号记录到文件: {output_path}")
 
 
 def update_account_cpa_in_jsonl(email: str, sso_value: str, cpa_record: dict, output_path=DEFAULT_ACCOUNT_FILE):
@@ -1737,7 +2017,10 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, account_output_path=DE
         "error": "",
         "cloud_uploaded": False,
     }
+    account_record["source_file"] = str(account_output_path or "")
     append_account_to_jsonl(account_record, account_output_path)
+    # Primary: write DB immediately so deleting task files cannot drop the account.
+    persist_account_to_console_db(account_record, cpa_record=None)
 
     # Outmail: mark used + optional anonymous mailbox cleanup
     try:
@@ -1780,6 +2063,7 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, account_output_path=DE
     }
     account_record["cpa"] = cpa_record
     update_account_cpa_in_jsonl(email, sso_value, cpa_record, account_output_path)
+    persist_account_to_console_db(account_record, cpa_record=cpa_record)
 
     if extract_numbers:
         extract_visible_numbers()

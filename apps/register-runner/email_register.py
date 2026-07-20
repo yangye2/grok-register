@@ -1,3 +1,4 @@
+import datetime
 
 from __future__ import annotations
 
@@ -97,6 +98,35 @@ except Exception as _exc:  # pragma: no cover
 # ============================================================
 
 _temp_email_cache: Dict[str, str] = {}
+
+
+
+_ORIG_PRINT = print
+
+
+def _stamp_message(message: object) -> str:
+    text = str(message)
+    if not text:
+        return text
+    head = text.lstrip()
+    if re.match(r"^\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}", head):
+        return text
+    if re.match(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}", head):
+        return text
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return f"[{ts}] {text}"
+
+
+def print(*args, **kwargs):  # type: ignore[no-redef]
+    if not args:
+        return _ORIG_PRINT(*args, **kwargs)
+    sep = kwargs.get("sep", " ")
+    try:
+        body = sep.join(str(a) for a in args)
+    except Exception:
+        body = " ".join(map(str, args))
+    stamped = _stamp_message(body)
+    return _ORIG_PRINT(stamped, **{k: v for k, v in kwargs.items() if k != "sep"})
 
 
 def get_email_provider() -> str:

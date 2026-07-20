@@ -3400,7 +3400,6 @@ def build_accounts_where_clause(
     sso_alive: str | None = None,
     sub2_status: str | None = None,
     grok2: str | None = None,
-    h5: str | None = None,
 ) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
@@ -3449,13 +3448,6 @@ def build_accounts_where_clause(
             clauses.append("COALESCE(grok2, 0) = 1")
         elif grok2_filter in {"0", "false", "no", "unmarked", "none"}:
             clauses.append("COALESCE(grok2, 0) = 0")
-
-    h5_filter = (h5 or "").strip().lower()
-    if h5_filter and h5_filter != "all":
-        if h5_filter in {"1", "true", "yes", "marked", "h5"}:
-            clauses.append("COALESCE(h5, 0) = 1")
-        elif h5_filter in {"0", "false", "no", "unmarked", "none"}:
-            clauses.append("COALESCE(h5, 0) = 0")
 
     if not clauses:
         return "", params
@@ -3732,6 +3724,10 @@ class TaskSupervisor:
             child_env["SUB2API_API_KEY"] = sub2_key
         child_env["GROK_REGISTER_OUTMAIL_USED_DIR"] = str(OUTMAIL_USED_DIR.resolve())
         child_env["GROK_REGISTER_CONSOLE_RUNTIME"] = str(RUNTIME_DIR.resolve())
+        child_env["GROK_CONSOLE_DB"] = str(DB_PATH.resolve())
+        child_env["GROK_TASK_ID"] = str(task_id)
+        child_env["GROK_TASK_NAME"] = str(row["name"] or f"task_{task_id}")
+        child_env["GROK_ACCOUNT_OUTPUT"] = str(task_dir / "accounts" / f"task_{task_id}.jsonl")
 
         output_path = task_dir / "sso" / f"task_{task_id}.txt"
         account_output_path = task_dir / "accounts" / f"task_{task_id}.jsonl"
@@ -4155,14 +4151,13 @@ def list_accounts(
     sso_alive: str = Query(""),
     sub2_status: str = Query(""),
     grok2: str = Query(""),
-    h5: str = Query(""),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
 ) -> dict[str, Any]:
     sync_all_account_records()
     _heal_stale_busy_accounts()
     where_clause, where_params = build_accounts_where_clause(
-        task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive, sub2_status=sub2_status, grok2=grok2, h5=h5
+        task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive, sub2_status=sub2_status, grok2=grok2
     )
     count_row = fetch_one(
         f"SELECT COUNT(*) AS c FROM accounts{where_clause}",
@@ -4200,12 +4195,10 @@ class AccountGrok2BatchPayload(AccountIdsPayload):
     grok2: bool = True
 
 
-class AccountH5BatchPayload(AccountIdsPayload):
-    h5: bool = True
 
 
 def update_account_flag(account_ids: list[int], column: str, value: bool) -> int:
-    if column not in {"grok2", "h5"}:
+    if column not in {"grok2"}:
         raise HTTPException(status_code=400, detail="invalid flag")
     ids = sorted({int(x) for x in account_ids if int(x) > 0})
     if not ids:
@@ -4228,10 +4221,6 @@ def mark_accounts_grok2(payload: AccountGrok2BatchPayload) -> dict[str, Any]:
     return {"ok": True, "grok2": bool(payload.grok2), "updated_count": changed}
 
 
-@app.post("/api/accounts/h5/batch")
-def mark_accounts_h5(payload: AccountH5BatchPayload) -> dict[str, Any]:
-    changed = update_account_flag(payload.account_ids, "h5", payload.h5)
-    return {"ok": True, "h5": bool(payload.h5), "updated_count": changed}
 
 
 @app.get("/api/accounts/ids")
@@ -4243,12 +4232,11 @@ def list_account_ids(
     sso_alive: str = Query(""),
     sub2_status: str = Query(""),
     grok2: str = Query(""),
-    h5: str = Query(""),
 ) -> dict[str, Any]:
     """Return all account ids matching current filters (for cross-page select-all)."""
     sync_all_account_records()
     where_clause, where_params = build_accounts_where_clause(
-        task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive, sub2_status=sub2_status, grok2=grok2, h5=h5
+        task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive, sub2_status=sub2_status, grok2=grok2
     )
     rows = fetch_all(
         f"SELECT id FROM accounts{where_clause} ORDER BY created_at DESC, id DESC",
@@ -4602,13 +4590,20 @@ def stop_task(task_id: int) -> dict[str, Any]:
 
 @app.delete("/api/tasks/{task_id}")
 def delete_task(task_id: int) -> dict[str, Any]:
+    """Delete task metadata and runtime files only.
+
+    Accounts already imported into SQLite are intentionally kept so that
+    deleting a task cannot wipe registered credentials.
+    """
     row = task_row(task_id)
     managed = supervisor._processes.get(task_id)
     if managed and managed.process.poll() is None:
         raise HTTPException(status_code=409, detail="Task is still running")
+    account_count = account_count_for_task(task_id)
     delete_task_files(row)
     execute_no_return("DELETE FROM tasks WHERE id = ?", (task_id,))
-    return {"ok": True}
+    # Keep accounts rows; task_name remains for history. task_id may no longer join to tasks.
+    return {"ok": True, "kept_accounts": account_count}
 
 
 if __name__ == "__main__":

@@ -564,7 +564,7 @@ button {
 
 .accounts-table tbody tr:last-child td { border-bottom: 0; }
 
-/* 1 select | 2 email | 3 password | 4 sso | 5 created | 6 SSO alive | 7 Token | 8 CPA | 9 Sub2 | 10 Grok2 | 11 H5 | 12 expire | 13 actions */
+/* 1 select | 2 email | 3 password | 4 sso | 5 created | 6 SSO alive | 7 Token | 8 CPA | 9 Sub2 | 10 Grok2 | 11 expire | 12 actions */
 .select-col,
 .accounts-table th:nth-child(1),
 .accounts-table td:nth-child(1) {
@@ -602,7 +602,7 @@ button {
 .accounts-table td:nth-child(11) {
   width: 88px;
   min-width: 88px;
-} /* SSO alive / Token / CPA / Sub2 / Grok2 / H5 */
+} /* SSO alive / Token / CPA / Sub2 / Grok2 */
 
 .accounts-table th:nth-child(12),
 .accounts-table td:nth-child(12) { width: 150px; } /* expire */
@@ -1358,7 +1358,6 @@ html[data-theme="dark"] .settings-save-bar {
 .account-cpa-status,
 .account-sub2-status,
 .account-grok2-status,
-.account-h5-status,
 .account-token-status,
 .account-sso-alive {
   max-width: none;

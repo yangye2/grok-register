@@ -56,6 +56,35 @@ _outmail_used_cache: dict[str, int] | None = None  # mailbox -> success usage co
 _outmail_used_lock = threading.Lock()
 
 
+
+_ORIG_PRINT = print
+
+
+def _stamp_message(message: object) -> str:
+    text = str(message)
+    if not text:
+        return text
+    head = text.lstrip()
+    if re.match(r"^\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}", head):
+        return text
+    if re.match(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}", head):
+        return text
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return f"[{ts}] {text}"
+
+
+def print(*args, **kwargs):  # type: ignore[no-redef]
+    if not args:
+        return _ORIG_PRINT(*args, **kwargs)
+    sep = kwargs.get("sep", " ")
+    try:
+        body = sep.join(str(a) for a in args)
+    except Exception:
+        body = " ".join(map(str, args))
+    stamped = _stamp_message(body)
+    return _ORIG_PRINT(stamped, **{k: v for k, v in kwargs.items() if k != "sep"})
+
+
 def _file_lock_exclusive(lock_path: str, timeout_sec: float = 30.0):
     """Cross-process exclusive lock (Windows msvcrt / Unix fcntl)."""
     class _Lock:
