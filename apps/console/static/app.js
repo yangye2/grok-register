@@ -476,12 +476,28 @@
 
   async function renderAccountFilters() {
     try {
-      const allTasks = await fetchAllTasksForUi();
+      let optionsData = [];
+      try {
+        const optRes = await fetchJson("/api/accounts/task-options");
+        optionsData = Array.isArray(optRes.items) ? optRes.items : [];
+      } catch (_e) {
+        const allTasks = await fetchAllTasksForUi();
+        optionsData = allTasks.map((task) => ({
+          id: task.id,
+          name: task.name,
+          account_count: task.account_count || 0,
+          deleted: false,
+        }));
+      }
       const options = [
         '<option value="all">全部任务</option>',
-        ...allTasks.map((task) => (
-          `<option value="${task.id}" ${state.accountTaskFilter === String(task.id) ? "selected" : ""}>#${task.id} ${escapeHtml(task.name)}</option>`
-        )),
+        ...optionsData.map((task) => {
+          const deleted = !!task.deleted;
+          const label = deleted
+            ? `#${task.id} ${task.name}`.replace(/\(已删除\)$/, "") + " (任务已删除)"
+            : `#${task.id} ${task.name}`;
+          return `<option value="${task.id}" ${state.accountTaskFilter === String(task.id) ? "selected" : ""}>${escapeHtml(label)}</option>`;
+        }),
       ];
       accountsTaskFilterEl.innerHTML = options.join("");
       accountsSearchInputEl.value = state.accountSearch;
@@ -584,7 +600,7 @@
         </div>
         <div class="task-actions">
           <span class="task-action-hint">点击查看日志</span>
-          <button class="button button-danger button-small" type="button" data-delete-task-id="${task.id}">删除</button>
+          <button class="button button-danger button-small" type="button" data-delete-task-id="${task.id}" data-account-count="${task.account_count || 0}">删除</button>
         </div>
       </div>
     `).join("");
@@ -615,10 +631,21 @@
       button.addEventListener("click", async (event) => {
         event.stopPropagation();
         const taskId = Number(button.dataset.deleteTaskId);
-        const confirmed = window.confirm(`确认删除任务 #${taskId} 吗？`);
+        const accountHint = button.dataset.accountCount
+          ? `已注册 ${button.dataset.accountCount} 个账号会保留在账号管理中。\n`
+          : "";
+        const confirmed = window.confirm(
+          `确认删除任务 #${taskId} 吗？\n` +
+          accountHint +
+          "将删除任务运行文件与日志，不会删除已入库账号。"
+        );
         if (!confirmed) return;
         try {
-          await fetchJson(`/api/tasks/${taskId}`, { method: "DELETE" });
+          const delRes = await fetchJson(`/api/tasks/${taskId}`, { method: "DELETE" });
+          if (delRes && typeof delRes.kept_accounts === "number") {
+            formMessageEl.textContent = `任务 #${taskId} 已删除，保留账号 ${delRes.kept_accounts} 个`;
+            formMessageEl.className = "form-message success";
+          }
           if (state.selectedTaskId === taskId) {
             state.selectedTaskId = null;
             detailTitleEl.textContent = "实时控制台";
@@ -629,11 +656,15 @@
           }
           await refreshTasks();
           await refreshDetail();
+          if (typeof refreshAccounts === "function") {
+            await refreshAccounts();
+            await renderAccountFilters();
+          }
         } catch (error) {
           formMessageEl.textContent = error.message;
           formMessageEl.className = "form-message error";
         }
-      });
+});
     });
   }
 
@@ -1131,7 +1162,7 @@ function isCpaBusy(account) {
       return;
     }
     accountCpaLogPanelEl.classList.remove("hidden");
-    accountCpaLogTitleEl.textContent = "\u8d26\u53f7\u65e5\u5fd7 \u00b7 " + (account.email || ("#" + account.id));
+    accountCpaLogTitleEl.textContent = "账号日志 · " + (account.email || ("#" + account.id)) + (account.task_deleted ? " · 任务已删除" : "");
 
     const metaRows = [
       ["\u90ae\u7bb1", account.email || "-"],

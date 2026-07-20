@@ -172,8 +172,15 @@ def ensure_dirs() -> None:
 
 
 def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=60)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA busy_timeout=60000")
+        # WAL improves concurrent reads/writes between console and register runners.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except sqlite3.Error:
+        pass
     return conn
 
 
@@ -1561,19 +1568,34 @@ def account_count_for_task(task_id: int) -> int:
     return int(row["c"]) if row else 0
 
 
+def account_success_stats(task_id: int) -> dict[str, Any]:
+    """Registered success count from accounts table (source of truth)."""
+    count = account_count_for_task(task_id)
+    last = fetch_one(
+        "SELECT email FROM accounts WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    )
+    last_email = str(last["email"] or "") if last is not None else ""
+    return {"count": count, "last_email": last_email}
+
+
 def serialize_task(row: sqlite3.Row) -> dict[str, Any]:
     task_id = int(row["id"])
+    acct = account_success_stats(task_id)
+    # Prefer DB account count; keep stored value only if somehow higher (legacy log-only edge cases).
+    completed = max(int(row["completed_count"] or 0), int(acct["count"]))
+    last_email = acct["last_email"] or (row["last_email"] or "")
     return {
         "id": task_id,
         "name": row["name"],
         "status": row["status"],
         "target_count": int(row["target_count"]),
-        "completed_count": int(row["completed_count"]),
+        "completed_count": completed,
         "failed_count": int(row["failed_count"]),
-        "account_count": account_count_for_task(task_id),
+        "account_count": int(acct["count"]),
         "current_round": int(row["current_round"]),
         "current_phase": row["current_phase"] or "",
-        "last_email": row["last_email"] or "",
+        "last_email": last_email,
         "last_error": row["last_error"] or "",
         "last_log_at": row["last_log_at"] or "",
         "notes": row["notes"] or "",
@@ -1591,6 +1613,7 @@ def serialize_account(row: sqlite3.Row) -> dict[str, Any]:
         "id": int(row["id"]),
         "task_id": int(row["task_id"]),
         "task_name": row["task_name"],
+        "task_deleted": "已删除" in str(row["task_name"] or ""),
         "email": row["email"],
         "sso": row["sso"],
         "given_name": row["given_name"] or "",
@@ -3516,8 +3539,12 @@ def read_log_lines(path: Path, limit: int = 200) -> list[str]:
 
 
 def parse_console_state(console_path: Path) -> dict[str, Any]:
+    """Parse runner console.log for phase/errors.
+
+    completed_count here is log-derived fallback only; supervisor prefers accounts table.
+    """
     state = {
-        "completed_count": 0,
+        "completed_count": 0,  # log-based fallback
         "failed_count": 0,
         "current_round": 0,
         "current_phase": "",
@@ -3769,6 +3796,10 @@ class TaskSupervisor:
             console_path = Path(row["console_path"])
             parsed = parse_console_state(console_path)
             sync_account_records_for_task(row)
+            # Source of truth: accounts rows written by runner (or jsonl fallback sync).
+            acct = account_success_stats(task_id)
+            completed_count = max(int(acct["count"]), int(parsed["completed_count"] or 0))
+            last_email = acct["last_email"] or parsed["last_email"]
             execute_no_return(
                 """
                 UPDATE tasks
@@ -3777,11 +3808,11 @@ class TaskSupervisor:
                 WHERE id = ?
                 """,
                 (
-                    parsed["completed_count"],
+                    completed_count,
                     parsed["failed_count"],
                     parsed["current_round"],
                     parsed["current_phase"],
-                    parsed["last_email"],
+                    last_email,
                     parsed["last_error"],
                     parsed["last_log_at"],
                     task_id,
@@ -3793,9 +3824,9 @@ class TaskSupervisor:
             final_status = STATUS_FAILED
             if row["status"] == STATUS_STOPPING or exit_code in (-15, -9):
                 final_status = STATUS_STOPPED
-            elif parsed["completed_count"] >= int(row["target_count"]) and exit_code == 0:
+            elif completed_count >= int(row["target_count"]) and exit_code == 0:
                 final_status = STATUS_COMPLETED
-            elif parsed["completed_count"] > 0:
+            elif completed_count > 0:
                 final_status = STATUS_PARTIAL
             execute_no_return(
                 """
@@ -3809,11 +3840,11 @@ class TaskSupervisor:
                     final_status,
                     now_iso(),
                     exit_code,
-                    parsed["completed_count"],
+                    completed_count,
                     parsed["failed_count"],
                     parsed["current_round"],
                     parsed["current_phase"] or final_status,
-                    parsed["last_email"],
+                    last_email,
                     parsed["last_error"],
                     parsed["last_log_at"],
                     task_id,
@@ -4140,6 +4171,46 @@ def _heal_stale_busy_accounts() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"[accounts] heal stale busy failed: {exc}", flush=True)
         return 0
+
+
+
+@app.get("/api/accounts/task-options")
+def account_task_options() -> dict[str, Any]:
+    """Task filter options for account page, including deleted tasks that still have accounts."""
+    live_rows = fetch_all("SELECT id, name FROM tasks ORDER BY id DESC")
+    live = {int(r["id"]): str(r["name"] or f"task_{int(r['id'])}") for r in live_rows}
+    account_rows = fetch_all(
+        """
+        SELECT task_id, MAX(task_name) AS task_name, COUNT(*) AS c
+        FROM accounts
+        GROUP BY task_id
+        ORDER BY task_id DESC
+        """
+    )
+    options: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for r in account_rows:
+        tid = int(r["task_id"])
+        seen.add(tid)
+        name = str(r["task_name"] or f"task_{tid}")
+        deleted = tid not in live
+        if deleted and "已删除" not in name:
+            name = f"{name}(已删除)"
+        options.append(
+            {
+                "id": tid,
+                "name": name,
+                "account_count": int(r["c"] or 0),
+                "deleted": deleted or ("已删除" in name),
+            }
+        )
+    # also include live tasks that currently have zero accounts
+    for tid, name in live.items():
+        if tid in seen:
+            continue
+        options.append({"id": tid, "name": name, "account_count": 0, "deleted": False})
+    options.sort(key=lambda x: int(x["id"]), reverse=True)
+    return {"items": options}
 
 
 @app.get("/api/accounts")
@@ -4600,9 +4671,16 @@ def delete_task(task_id: int) -> dict[str, Any]:
     if managed and managed.process.poll() is None:
         raise HTTPException(status_code=409, detail="Task is still running")
     account_count = account_count_for_task(task_id)
+    task_name = str(row["name"] or f"task_{task_id}")
+    # Mark retained accounts so UI can show orphaned task clearly after task row is gone.
+    if "已删除" not in task_name:
+        marked_name = f"{task_name}(已删除)"
+        execute_no_return(
+            "UPDATE accounts SET task_name = ? WHERE task_id = ?",
+            (marked_name, task_id),
+        )
     delete_task_files(row)
     execute_no_return("DELETE FROM tasks WHERE id = ?", (task_id,))
-    # Keep accounts rows; task_name remains for history. task_id may no longer join to tasks.
     return {"ok": True, "kept_accounts": account_count}
 
 

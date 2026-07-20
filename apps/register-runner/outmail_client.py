@@ -69,7 +69,7 @@ def _stamp_message(message: object) -> str:
         return text
     if re.match(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}", head):
         return text
-    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return f"[{ts}] {text}"
 
 
