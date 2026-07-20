@@ -546,7 +546,7 @@ button {
 
 .accounts-table tbody tr:last-child td { border-bottom: 0; }
 
-/* 1 select | 2 email | 3 password | 4 sso | 5 created | 6 SSO alive | 7 Token | 8 CPA | 9 Sub2 | 10 expire | 11 actions */
+/* 1 select | 2 email | 3 password | 4 sso | 5 created | 6 SSO alive | 7 Token | 8 CPA | 9 Sub2 | 10 Grok2 | 11 expire | 12 actions */
 .select-col,
 .accounts-table th:nth-child(1),
 .accounts-table td:nth-child(1) {
@@ -1321,6 +1321,7 @@ html[data-theme="dark"] .settings-save-bar {
 
 .account-cpa-status,
 .account-sub2-status,
+.account-grok2-status,
 .account-token-status,
 .account-sso-alive {
   max-width: none;
@@ -1360,4 +1361,145 @@ html[data-theme="dark"] .settings-save-bar {
 }
 .config-meta-card .meta-hint {
   margin-top: 0.4rem;
+}
+
+/* ===== Unified log stream (task console + account log) ===== */
+.log-stream,
+.console-output,
+.account-cpa-log {
+  font: 13.5px/1.55 "SFMono-Regular", "IBM Plex Mono", "Cascadia Mono", "Consolas", monospace;
+}
+
+.console-output,
+.account-cpa-log {
+  display: block;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.log-line {
+  display: grid;
+  grid-template-columns: 64px 52px 1fr;
+  gap: 8px;
+  align-items: start;
+  padding: 1px 0;
+  border-left: 2px solid transparent;
+  padding-left: 6px;
+  margin-left: -2px;
+}
+
+.log-line.log-empty {
+  display: block;
+  height: 0.45em;
+  grid-template-columns: none;
+  border: 0;
+  padding: 0;
+}
+
+.log-line.log-section,
+.log-line.log-level-meta {
+  grid-template-columns: 1fr;
+  margin: 6px 0 4px;
+  padding: 4px 8px;
+  border-left: 0;
+  border-radius: 6px;
+  background: rgba(148, 163, 184, 0.12);
+  color: #94a3b8;
+  font-weight: 600;
+}
+
+.log-time {
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.log-time-empty::before {
+  content: "";
+}
+
+.log-level {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.log-msg {
+  color: #e2e8f0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.log-level-info .log-level { color: #38bdf8; }
+.log-level-info { border-left-color: rgba(56, 189, 248, 0.35); }
+
+.log-level-ok .log-level { color: #4ade80; }
+.log-level-ok { border-left-color: rgba(74, 222, 128, 0.45); }
+.log-level-ok .log-msg { color: #bbf7d0; }
+
+.log-level-warn .log-level { color: #fbbf24; }
+.log-level-warn { border-left-color: rgba(251, 191, 36, 0.5); }
+.log-level-warn .log-msg { color: #fde68a; }
+
+.log-level-error .log-level { color: #f87171; }
+.log-level-error { border-left-color: rgba(248, 113, 113, 0.55); }
+.log-level-error .log-msg { color: #fecaca; }
+
+.log-level-debug .log-level { color: #a78bfa; }
+.log-level-debug { border-left-color: rgba(167, 139, 250, 0.35); }
+.log-level-debug .log-msg { color: #c4b5fd; }
+
+.log-meta-block {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 14px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(30, 41, 59, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.log-meta-row {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.log-meta-k {
+  flex: 0 0 auto;
+  color: #94a3b8;
+  min-width: 4.5em;
+}
+
+.log-meta-v {
+  color: #e2e8f0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.log-section-title {
+  margin: 4px 0 8px;
+  padding: 4px 0;
+  color: #93c5fd;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-bottom: 1px dashed rgba(148, 163, 184, 0.25);
+}
+
+@media (max-width: 720px) {
+  .log-line {
+    grid-template-columns: 52px 44px 1fr;
+    gap: 6px;
+  }
+  .log-meta-block {
+    grid-template-columns: 1fr;
+  }
 }

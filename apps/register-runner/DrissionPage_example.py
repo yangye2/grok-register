@@ -10,7 +10,9 @@ import logging
 import time
 import os
 import random
+import re
 import secrets
+import string
 import sys
 
 from email_register import get_email_and_token, get_oai_code, cleanup_mailbox_if_needed
@@ -607,7 +609,7 @@ return true;
         if clicked:
             return True
 
-        time.sleep(0.5)
+        time.sleep(random.uniform(0.350, 0.675))
 
     raise Exception('未找到“使用邮箱注册”按钮')
 
@@ -682,16 +684,16 @@ return 'filled';
         )
 
         if filled == 'not-ready':
-            time.sleep(0.5)
+            time.sleep(random.uniform(0.350, 0.675))
             continue
 
         if filled != 'filled':
             print(f"[Debug] 邮箱输入框已出现，但写入失败: {filled}")
-            time.sleep(0.5)
+            time.sleep(random.uniform(0.350, 0.675))
             continue
 
         if filled == 'filled':
-            time.sleep(0.8)
+            time.sleep(random.uniform(0.560, 1.080))
             clicked = page.run_js(
                 r"""
 function isVisible(node) {
@@ -735,7 +737,7 @@ return true;
                 print(f"[*] 已填写邮箱并点击注册: {email}")
                 return email, dev_token
 
-        time.sleep(0.5)
+        time.sleep(random.uniform(0.350, 0.675))
 
     raise Exception("未找到邮箱输入框或注册按钮")
 
@@ -1003,25 +1005,25 @@ return 'not-ready';
             if has_profile_form():
                 print("[*] 验证码提交后已跳转到最终注册页。")
                 return code
-            time.sleep(1)
+            time.sleep(random.uniform(0.700, 1.350))
             continue
 
         if filled == 'not-ready':
             if has_profile_form():
                 print("[*] 已直接进入最终注册页，跳过验证码按钮确认。")
                 return code
-            time.sleep(0.5)
+            time.sleep(random.uniform(0.350, 0.675))
             continue
 
         if filled not in ('filled', 'soft-filled'):
             print(f"[Debug] 验证码输入框已出现，但写入失败: {filled}")
-            time.sleep(0.5)
+            time.sleep(random.uniform(0.350, 0.675))
             continue
         if filled == 'soft-filled':
             print(f"[Debug] 验证码 value 未回读，按 soft-filled 继续提交: {code}")
 
         if filled in ('filled', 'soft-filled'):
-            time.sleep(1.2)
+            time.sleep(random.uniform(0.840, 1.620))
             try:
                 clicked = page.run_js(
                     r"""
@@ -1097,7 +1099,7 @@ return 'clicked';
 
             if clicked == 'clicked':
                 print(f"[*] 已填写验证码并点击确认邮箱: {code}")
-                time.sleep(2)
+                time.sleep(random.uniform(1.400, 2.700))
                 refresh_active_page()
                 if has_profile_form():
                     print("[*] 验证码确认完成，最终注册页已就绪。")
@@ -1110,10 +1112,10 @@ return 'clicked';
                     return code
 
             if clicked == 'disconnected':
-                time.sleep(1)
+                time.sleep(random.uniform(0.700, 1.350))
                 continue
 
-        time.sleep(0.5)
+        time.sleep(random.uniform(0.350, 0.675))
 
     debug_snapshot = page.run_js(
         r"""
@@ -1204,12 +1206,59 @@ Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
             challengeButton.click()
         except:
             pass
-        time.sleep(1)
+        time.sleep(random.uniform(0.700, 1.350))
     raise Exception("failed to solve turnstile")
 
 
+def _build_register_password(min_len: int = 14, max_len: int = 22) -> str:
+    """Build a strong password with variable length/structure (not a fixed template).
+
+    Always includes upper / lower / digit / special; length random in [min_len, max_len].
+    Avoids a fixed prefix/middle marker so batch accounts look less patterned.
+    """
+    min_len = max(12, int(min_len or 14))
+    max_len = max(min_len, int(max_len or 22))
+    length = random.randint(min_len, max_len)
+
+    upper = string.ascii_uppercase
+    lower = string.ascii_lowercase
+    digits = string.digits
+    # Avoid ambiguous / form-hostile chars: space, quotes, backslash
+    specials = "!@#$%^&*_-+=?"
+    # Prefer alnum-heavy pool so passwords stay easy to type/export
+    pool = upper + lower + digits + specials
+
+    # Guarantee one of each class, then fill the rest randomly
+    required = [
+        secrets.choice(upper),
+        secrets.choice(lower),
+        secrets.choice(digits),
+        secrets.choice(specials),
+    ]
+    rest = [secrets.choice(pool) for _ in range(length - len(required))]
+    chars = required + rest
+    # Shuffle with secrets-backed RNG
+    for i in range(len(chars) - 1, 0, -1):
+        j = secrets.randbelow(i + 1)
+        chars[i], chars[j] = chars[j], chars[i]
+    password = "".join(chars)
+
+    # Extra safety: if shuffle somehow missed a class (should not), repair
+    if not re.search(r"[A-Z]", password):
+        password = password[:-1] + secrets.choice(upper)
+    if not re.search(r"[a-z]", password):
+        password = password[:-2] + secrets.choice(lower) + password[-1:]
+    if not re.search(r"[0-9]", password):
+        password = password[:-3] + secrets.choice(digits) + password[-2:]
+    if not re.search(r"[!@#$%^&*_\-+=?]", password):
+        password = password[:-4] + secrets.choice(specials) + password[-3:]
+    return password
+
+
 def build_profile():
-    """Generate registration profile: dynamic given/family name + strong password."""
+    """Generate registration profile: diverse names + strong variable password."""
+    # Mix Latin first names; surnames mix East-Asia pinyin + common Western.
+    # Avoid always "Chinese surname + short English given" which looks templated.
     given_name_pool = [
         "Neo", "Ethan", "Liam", "Noah", "Lucas", "Mason", "Ryan", "Leo",
         "Owen", "Aiden", "Elio", "Aron", "Ivan", "Nolan", "Evan", "Kai",
@@ -1217,9 +1266,15 @@ def build_profile():
         "Brian", "Dylan", "Alex", "Colin", "Blake", "Gavin", "Henry", "Julian",
         "Kevin", "Louis", "Marcus", "Nathan", "Oscar", "Peter", "Quinn", "Robin",
         "Simon", "Tristan", "Victor", "Wesley", "Xavier", "Yuri", "Zane", "Felix",
-        "Aaron", "Damian",
+        "Aaron", "Damian", "Sofia", "Emma", "Olivia", "Ava", "Mia", "Luna",
+        "Chloe", "Nora", "Ivy", "Zoe", "Ella", "Aria", "Maya", "Ruby",
+        "Grace", "Hazel", "Iris", "Jade", "Leah", "Nina", "Tara", "Vera",
+        "Daniel", "Michael", "James", "Robert", "David", "Thomas", "Andrew",
+        "Matthew", "Joseph", "Samuel", "Benjamin", "Christopher", "Anthony",
+        "William", "Alexander", "Sebastian", "Theodore", "Gabriel", "Mateo",
     ]
     family_name_pool = [
+        # East Asia (pinyin)
         "Lin", "Wang", "Zhao", "Liu", "Chen", "Zhang", "Xu", "Sun",
         "Guo", "He", "Yang", "Wu", "Zhou", "Tang", "Qin", "Shi",
         "Fang", "Peng", "Cao", "Deng", "Fan", "Fu", "Gao", "Han",
@@ -1227,11 +1282,28 @@ def build_profile():
         "Ren", "Shao", "Tian", "Xie", "Yan", "Yao", "Yu", "Zeng",
         "Bai", "Duan", "Hou", "Jin", "Kang", "Luo", "Mao", "Song",
         "Wei", "Xiong",
+        # Western / mixed
+        "Smith", "Johnson", "Brown", "Jones", "Miller", "Davis", "Wilson",
+        "Moore", "Taylor", "Anderson", "Thomas", "Jackson", "White", "Harris",
+        "Martin", "Thompson", "Garcia", "Martinez", "Robinson", "Clark",
+        "Rodriguez", "Lewis", "Lee", "Walker", "Hall", "Allen", "Young",
+        "King", "Wright", "Scott", "Green", "Baker", "Adams", "Nelson",
+        "Hill", "Ramirez", "Campbell", "Mitchell", "Roberts", "Carter",
+        "Phillips", "Evans", "Turner", "Torres", "Parker", "Collins",
+        "Edwards", "Stewart", "Morris", "Murphy", "Cook", "Rogers", "Morgan",
+        "Peterson", "Cooper", "Reed", "Bailey", "Bell", "Gomez", "Kelly",
+        "Howard", "Ward", "Cox", "Diaz", "Richardson", "Wood", "Watson",
+        "Brooks", "Bennett", "Gray", "James", "Reyes", "Cruz", "Hughes",
+        "Price", "Myers", "Long", "Foster", "Sanders", "Ross", "Morales",
+        "Powell", "Sullivan", "Russell", "Ortiz", "Jenkins", "Gutierrez",
+        "Perry", "Butler", "Barnes", "Fisher", "Henderson", "Coleman",
+        "Simmons", "Patterson", "Jordan", "Reynolds", "Hamilton", "Graham",
+        "Kim", "Park", "Choi", "Nguyen", "Tran", "Patel", "Singh", "Khan",
+        "Ali", "Hassan", "Ahmed", "Silva", "Santos", "Costa", "Oliveira",
     ]
     given_name = random.choice(given_name_pool)
     family_name = random.choice(family_name_pool)
-    # Password: upper + hex + special + url-safe mix
-    password = "N" + secrets.token_hex(4) + "!a7#" + secrets.token_urlsafe(6)
+    password = _build_register_password(14, 22)
     return given_name, family_name, password
 
 
@@ -1333,12 +1405,12 @@ return [
         )
 
         if filled == 'not-ready':
-            time.sleep(0.5)
+            time.sleep(random.uniform(0.350, 0.675))
             continue
 
         if filled != 'filled':
             print(f"[Debug] 最终注册页输入框已出现，但姓名/密码写入失败: {filled}")
-            time.sleep(0.5)
+            time.sleep(random.uniform(0.350, 0.675))
             continue
 
         values_ok = page.run_js(
@@ -1383,7 +1455,7 @@ return String(givenInput.value || '').trim() === String(expectedGiven || '').tri
         )
         if not values_ok:
             print("[Debug] 最终注册页字段值校验失败，继续重试填写。")
-            time.sleep(0.5)
+            time.sleep(random.uniform(0.350, 0.675))
             continue
 
         turnstile_state = page.run_js(
@@ -1423,7 +1495,7 @@ return String(challengeInput.value || '').trim() === String(token || '').trim();
                 if synced:
                     print("[*] Turnstile 响应已同步到最终注册表单。")
 
-        time.sleep(1.2)
+        time.sleep(random.uniform(0.840, 1.620))
 
         try:
             submit_button = page.ele('tag:button@@text()=完成注册') or page.ele('tag:button@@text():Create Account') or page.ele('tag:button@@text():Sign up')
@@ -1471,7 +1543,7 @@ return challengeInput ? String(challengeInput.value || '').trim() : 'not-found';
                 "password": password,
             }
 
-        time.sleep(0.5)
+        time.sleep(random.uniform(0.350, 0.675))
 
     raise Exception("未找到最终注册表单或完成注册按钮")
 
@@ -1537,7 +1609,7 @@ return matches.slice(0, 30);
                     pass
             return result
 
-        time.sleep(1)
+        time.sleep(random.uniform(0.700, 1.350))
 
     raise Exception("登录后未提取到可见数字文本")
 
@@ -1551,7 +1623,7 @@ def wait_for_sso_cookie(timeout=30):
         try:
             refresh_active_page()
             if page is None:
-                time.sleep(1)
+                time.sleep(random.uniform(0.700, 1.350))
                 continue
 
             cookies = page.cookies(all_domains=True, all_info=True) or []
@@ -1575,7 +1647,7 @@ def wait_for_sso_cookie(timeout=30):
         except Exception:
             pass
 
-        time.sleep(1)
+        time.sleep(random.uniform(0.700, 1.350))
 
     raise Exception(f"注册完成后未获取到 sso cookie，当前已见 cookie: {sorted(last_seen_names)}")
 
@@ -1776,7 +1848,7 @@ def main():
                 restart_browser()
 
             if args.count == 0 or current_round < args.count:
-                time.sleep(2)
+                time.sleep(random.uniform(1.400, 2.700))
 
     finally:
         stop_browser()

@@ -339,14 +339,92 @@ def _build_headers(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     return headers
 
 
-def _generate_local_part(length: int = 10) -> str:
-    chars = string.ascii_lowercase + string.digits
-    return "".join(random.choice(chars) for _ in range(length))
+def _generate_local_part(length: int | None = None) -> str:
+    """Diverse mailbox local-parts (not only [a-z0-9]{fixed})."""
+    if length is None:
+        length = random.randint(8, 14)
+    length = max(6, min(20, int(length)))
+
+    style = random.choices(
+        ["alnum", "name_digits", "words_join", "dotted", "mixed"],
+        weights=[35, 25, 15, 10, 15],
+        k=1,
+    )[0]
+    letters = string.ascii_lowercase
+    digits = string.digits
+    alnum = letters + digits
+
+    def _finish(s: str) -> str:
+        s = re.sub(r"[^a-z0-9._]", "", str(s or "").lower())
+        s = s.strip("._")
+        if not s:
+            s = "u" + "".join(random.choice(alnum) for _ in range(8))
+        if not s[0].isalpha():
+            s = random.choice(letters) + s[1:]
+        # collapse repeated separators
+        while ".." in s:
+            s = s.replace("..", ".")
+        while "__" in s:
+            s = s.replace("__", "_")
+        return s[:20]
+
+    if style == "alnum":
+        n = random.randint(8, 14)
+        body = [random.choice(letters)] + [random.choice(alnum) for _ in range(n - 1)]
+        return _finish("".join(body))
+
+    if style == "name_digits":
+        seeds = [
+            "alex", "sam", "jay", "max", "leo", "kai", "aria", "mia", "noah", "liam",
+            "owen", "ryan", "cole", "eric", "tony", "amy", "ivy", "zoe", "luke", "mark",
+            "anna", "bella", "chris", "dave", "ella", "finn", "gina", "hugo", "iris",
+        ]
+        base = random.choice(seeds)
+        sep = random.choice(["", "", ".", "_"])
+        num = "".join(random.choice(digits) for _ in range(random.randint(2, 5)))
+        return _finish(f"{base}{sep}{num}")
+
+    if style == "words_join":
+        a = random.choice(["blue", "fast", "cool", "soft", "dark", "bright", "quiet", "lucky", "north", "sunny"])
+        b = random.choice(["fox", "wave", "leaf", "stone", "bird", "lake", "road", "moon", "star", "wind"])
+        sep = random.choice(["", ".", "_"])
+        tail = "".join(random.choice(digits) for _ in range(random.randint(0, 3)))
+        return _finish(f"{a}{sep}{b}{tail}")
+
+    if style == "dotted":
+        left = "".join(random.choice(letters) for _ in range(random.randint(3, 6)))
+        right = "".join(random.choice(alnum) for _ in range(random.randint(3, 6)))
+        return _finish(f"{left}.{right}")
+
+    # mixed
+    n = random.randint(9, 15)
+    body = [random.choice(letters)]
+    for _ in range(n - 1):
+        if random.random() < 0.08 and body[-1] not in "._":
+            body.append(random.choice(["_", "."]))
+        else:
+            body.append(random.choice(alnum))
+    while body and body[-1] in "._":
+        body.pop()
+    return _finish("".join(body))
 
 
-def _generate_mail_password(length: int = 18) -> str:
+
+def _generate_mail_password(length: int | None = None) -> str:
+    # mailbox provider password (not xAI account password); vary length
+    if length is None:
+        length = random.randint(14, 22)
+    length = max(12, min(32, int(length)))
     chars = string.ascii_letters + string.digits
-    return "".join(random.choice(chars) for _ in range(length))
+    # ensure mixed case + digit
+    body = [
+        random.choice(string.ascii_uppercase),
+        random.choice(string.ascii_lowercase),
+        random.choice(string.digits),
+    ]
+    body += [random.choice(chars) for _ in range(length - 3)]
+    random.shuffle(body)
+    return "".join(body)
 
 
 def _build_duckmail_headers(token: str = "") -> Dict[str, str]:
@@ -443,7 +521,7 @@ def _create_duckmail_email() -> Tuple[str, str, str]:
 
     for attempt in range(max_attempts):
         domain = _resolve_duckmail_domain(session, use_cffi, api_base)
-        email_local = _generate_local_part(random.randint(8, 12))
+        email_local = _generate_local_part()
         email = f"{email_local}@{domain}"
         password = _generate_mail_password()
 
@@ -525,7 +603,7 @@ def create_temp_email() -> Tuple[str, str, str]:
     try:
         for attempt in range(max_attempts):
             domain = _pick_domain(pool)
-            email_local = _generate_local_part(random.randint(8, 12))
+            email_local = _generate_local_part()
             print(
                 f"[*] Temp Mail domain pool pick: {domain} "
                 f"(pool={len(pool)}, pick={TEMP_MAIL_DOMAIN_PICK or 'round_robin'}, "

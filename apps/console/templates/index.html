@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Grok Register Console</title>
-  <link rel="stylesheet" href="/static/app.css?v=1784363627">
+  <link rel="stylesheet" href="/static/app.css?v=1784514892">
 </head>
 <body>
   <div class="shell">
@@ -135,6 +135,8 @@
               <div class="accounts-toolbar-group" title="推送与队列">
                 <button id="accountsCpaPushBatchBtn" class="button button-primary" type="button" disabled>批量推送 CPA</button>
                 <button id="accountsSub2apiPushBatchBtn" class="button button-purple" type="button" disabled>批量推送 Sub2API</button>
+                <button id="accountsGrok2MarkBtn" class="button button-info" type="button" disabled>Grok2</button>
+                <button id="accountsGrok2UnmarkBtn" class="button button-neutral" type="button" disabled>Clear Grok2</button>
                 <button id="accountsCpaCancelBtn" class="button button-danger" type="button" disabled>停止队列</button>
               </div>
               <span class="accounts-toolbar-sep" aria-hidden="true"></span>
@@ -205,6 +207,14 @@
                 <option value="failed">失败</option>
               </select>
             </label>
+            <label class="filter-field narrow">
+              <span class="meta-label">Grok2</span>
+              <select id="accountsGrok2Filter">
+                <option value="all">All</option>
+                <option value="1">Marked</option>
+                <option value="0">Unmarked</option>
+              </select>
+            </label>
             <label class="filter-field">
               <span class="meta-label">每页数量</span>
               <select id="accountsPageSize">
@@ -231,7 +241,7 @@
               <strong id="accountCpaLogTitle">CPA 日志</strong>
               <button id="accountCpaLogCloseBtn" class="button button-secondary button-small" type="button">关闭</button>
             </div>
-            <pre id="accountCpaLog" class="account-cpa-log">暂无日志</pre>
+            <div id="accountCpaLog" class="account-cpa-log log-stream" role="log">暂无日志</div>
           </div>
           <div class="accounts-table-wrap">
             <table class="accounts-table">
@@ -246,6 +256,7 @@
                   <th>Token</th>
                   <th>CPA</th>
                   <th>Sub2</th>
+                  <th>Grok2</th>
                   <th>过期时间</th>
                   <th>操作</th>
                 </tr>
@@ -376,6 +387,7 @@
                 <label>
                   <span>每号别名次数 <em>outmail_plus_alias_count</em></span>
                   <input name="outmail_plus_alias_count" type="number" min="1" max="1000" value="1">
+                  <small class="field-hint">每个主邮箱允许的成功注册次数（跨任务累计）。</small>
                 </label>
                 <label>
                   <span>别名后缀长度 <em>outmail_alias_suffix_len</em></span>
@@ -410,8 +422,9 @@
                   <span>跳过已用主邮箱 <em>outmail_exclude_used</em></span>
                 </label>
                 <label>
-                  <span>已用邮箱记录文件 <em>outmail_used_file</em></span>
-                  <input name="outmail_used_file" placeholder="outmail_used_mailboxes.txt">
+                  <span>已用主邮箱记录文件 <em>outmail_used_file</em></span>
+                  <input name="outmail_used_file" placeholder="outmail_used_mailboxes.txt" title="全局共享（不随任务删除清空）。相对名会落到 console runtime；也可填绝对路径。清空文件可重用主邮箱。">
+                  <small class="field-hint">全局共享（不随任务删除清空）。相对名会落到 console runtime；也可填绝对路径。清空文件可重用主邮箱。</small>
                 </label>
               </div>
               <div class="settings-subhead">匿名临时邮箱</div>
@@ -733,7 +746,7 @@
             <div id="detailSummary" class="summary-grid"></div>
             <div class="console-wrap">
               <div class="console-head">实时控制台日志</div>
-              <pre id="consoleOutput" class="console-output">选择任务后显示输出</pre>
+              <div id="consoleOutput" class="console-output log-stream" role="log" aria-live="polite">选择任务后显示输出</div>
             </div>
           </section>
         </div>
@@ -744,6 +757,6 @@
   <script>
     window.__DEFAULTS__ = {{ defaults|safe }};
   </script>
-  <script src="/static/app.js?v=1784363627" charset="utf-8"></script>
+  <script src="/static/app.js?v=1784514892" charset="utf-8"></script>
 </body>
 </html>

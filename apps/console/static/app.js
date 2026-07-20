@@ -12,6 +12,7 @@
     accountCpaFilter: "all",
     accountTokenFilter: "all",
     accountSub2Filter: "all",
+    accountGrok2Filter: "all",
     accountSsoFilter: "all",
     accountPage: 1,
     accountPageSize: 20,
@@ -57,6 +58,8 @@
   const accountsOauthBatchBtnEl = document.getElementById("accountsOauthBatchBtn");
   const accountsCpaPushBatchBtnEl = document.getElementById("accountsCpaPushBatchBtn");
   const accountsSub2apiPushBatchBtnEl = document.getElementById("accountsSub2apiPushBatchBtn");
+  const accountsGrok2MarkBtnEl = document.getElementById("accountsGrok2MarkBtn");
+  const accountsGrok2UnmarkBtnEl = document.getElementById("accountsGrok2UnmarkBtn");
   const accountsCpaCancelBtnEl = document.getElementById("accountsCpaCancelBtn");
   const accountsCpaExportBtnEl = document.getElementById("accountsCpaExportBtn");
   const accountsSelectFilteredBtnEl = document.getElementById("accountsSelectFilteredBtn");
@@ -80,6 +83,7 @@
   const accountsCpaFilterEl = document.getElementById("accountsCpaFilter");
   const accountsTokenFilterEl = document.getElementById("accountsTokenFilter");
   const accountsSub2FilterEl = document.getElementById("accountsSub2Filter");
+  const accountsGrok2FilterEl = document.getElementById("accountsGrok2Filter");
   const accountsSsoFilterEl = document.getElementById("accountsSsoFilter");
   const accountsPageSizeEl = document.getElementById("accountsPageSize");
   const accountsPageMetaEl = document.getElementById("accountsPageMeta");
@@ -96,11 +100,156 @@
   const taskPrevPageBtnEl = document.getElementById("taskPrevPageBtn");
   const taskNextPageBtnEl = document.getElementById("taskNextPageBtn");
 
+
   function escapeHtml(value) {
     return String(value || "")
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;");
+  }
+
+
+  /** Normalize mixed log tags into a short level token. */
+  function normalizeLogLevel(raw) {
+    const t = String(raw || "").trim().toLowerCase();
+    if (t === "ok" || t === "success") return "OK";
+    if (!t || t === "*" || t === "info") return "INFO";
+    if (t === "error" || t === "fail" || t === "failed" || t === "err") return "ERROR";
+    if (t === "warn" || t === "warning") return "WARN";
+    if (t === "debug" || t === "dbg" || t === "trace") return "DEBUG";
+    return "INFO";
+  }
+
+  function shortLogTime(value) {
+    const t = String(value || "").trim();
+    if (!t) return "";
+    const m = t.match(/(\d{2}:\d{2}:\d{2})/);
+    if (m) return m[1];
+    if (t.length >= 19 && t[10] === "T") return t.slice(11, 19);
+    return t.length > 19 ? t.slice(0, 19) : t;
+  }
+
+  /**
+   * Parse one raw log line from task console / account cpa_log.
+   * Supports:
+   *   [2026-07-20T12:00:00+08:00] message
+   *   2026-07-20 12:00:00 | message
+   *   [Debug]/Error]/Warn]/Info]|[*]|[OK] message
+   */
+  function parseLogLine(raw) {
+    let line = String(raw ?? "").replace(/\r/g, "");
+    if (!line.trim()) {
+      return { time: "", level: "META", msg: "", empty: true, raw: line };
+    }
+    const trimmed = line.trim();
+    if (/^-{3,}/.test(trimmed) || /^={3,}/.test(trimmed) || /^[\u2014-]{3,}/.test(trimmed)) {
+      return { time: "", level: "META", msg: trimmed, empty: false, raw: line, section: true };
+    }
+    // Chinese section titles: \u8be6\u7ec6\u65e5\u5fd7 / \u64cd\u4f5c\u65e5\u5fd7
+    if (trimmed.indexOf("\u8be6\u7ec6\u65e5\u5fd7") >= 0 || trimmed.indexOf("\u64cd\u4f5c\u65e5\u5fd7") >= 0) {
+      return { time: "", level: "META", msg: trimmed, empty: false, raw: line, section: true };
+    }
+
+    let time = "";
+    let msg = line;
+
+    let m = msg.match(/^\[(\d{4}-\d{2}-\d{2}[T ][^\]]+)\]\s*(.*)$/);
+    if (m) {
+      time = m[1].replace("T", " ").replace(/\.\d+/, "").replace(/\+[\d:]+$/, "").replace(/Z$/, "");
+      msg = m[2];
+    } else {
+      m = msg.match(/^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)\s*[|]\s*(.*)$/);
+      if (m) {
+        time = m[1].replace("T", " ").replace(/[.,]\d+$/, "");
+        msg = m[2];
+      } else {
+        m = msg.match(/^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})\s+(.*)$/);
+        if (m) {
+          time = m[1].replace("T", " ");
+          msg = m[2];
+        }
+      }
+    }
+
+    let level = "INFO";
+    m = msg.match(/^\[(\*|Debug|Dbg|Error|Err|Warn(?:ing)?|Info|OK|Success|Fail(?:ed)?|Trace)\]\s*/i);
+    if (m) {
+      level = normalizeLogLevel(m[1]);
+      msg = msg.slice(m[0].length);
+    } else {
+      const low = msg.toLowerCase();
+      if (/(error|exception|traceback|failed)/i.test(msg)
+          && !/(no error|without error|fail_count\s*[:=]\s*0)/i.test(msg)
+          && (msg.indexOf("\u5931\u8d25") >= 0 || msg.indexOf("\u5f02\u5e38") >= 0 || msg.indexOf("\u9519\u8bef") >= 0
+              || /(error|exception|traceback|failed)/i.test(msg))) {
+        // severity by keywords (EN + CN)
+        if (/(error|exception|traceback|failed)/i.test(msg)
+            || msg.indexOf("\u5931\u8d25") >= 0
+            || msg.indexOf("\u5f02\u5e38") >= 0
+            || msg.indexOf("\u9519\u8bef") >= 0) {
+          level = "ERROR";
+        }
+      }
+      if (level === "INFO" && (/\bwarn(ing)?\b/i.test(msg) || msg.indexOf("\u8b66\u544a") >= 0)) {
+        level = "WARN";
+      }
+      if (level === "INFO" && (/^\[?debug\b/i.test(msg) || /\[debug\]/i.test(line))) {
+        level = "DEBUG";
+      }
+    }
+
+    m = msg.match(/^(\[[^\]]+\]\s*)\[(Debug|Error|Warn(?:ing)?|Info|OK|Success|Fail(?:ed)?)\]\s*/i);
+    if (m) {
+      level = normalizeLogLevel(m[2]);
+      msg = msg.replace(/^(\[[^\]]+\]\s*)\[(Debug|Error|Warn(?:ing)?|Info|OK|Success|Fail(?:ed)?)\]\s*/i, "$1");
+    }
+
+    msg = String(msg || "").trimEnd();
+    if (!msg) msg = line.trim();
+    return { time, level, msg, empty: false, raw: line, section: false };
+  }
+
+  function renderLogHtml(lines, options = {}) {
+    const list = Array.isArray(lines) ? lines : String(lines || "").split(/\r?\n/);
+    const showTime = options.showTime !== false;
+    const emptyText = options.emptyText || "\u6682\u65e0\u65e5\u5fd7";
+    if (!list.length || (list.length === 1 && !String(list[0] || "").trim())) {
+      return `<div class="log-line log-level-meta"><span class="log-msg">${escapeHtml(emptyText)}</span></div>`;
+    }
+    const parts = [];
+    for (const raw of list) {
+      const item = parseLogLine(raw);
+      if (item.empty) {
+        parts.push(`<div class="log-line log-empty"></div>`);
+        continue;
+      }
+      if (item.section) {
+        parts.push(
+          `<div class="log-line log-level-meta log-section"><span class="log-msg">${escapeHtml(item.msg)}</span></div>`
+        );
+        continue;
+      }
+      const lv = item.level || "INFO";
+      const timeHtml = showTime && item.time
+        ? `<span class="log-time" title="${escapeHtml(item.time)}">${escapeHtml(shortLogTime(item.time))}</span>`
+        : (showTime ? `<span class="log-time log-time-empty"></span>` : "");
+      parts.push(
+        `<div class="log-line log-level-${lv.toLowerCase()}">` +
+          timeHtml +
+          `<span class="log-level">${escapeHtml(lv)}</span>` +
+          `<span class="log-msg">${escapeHtml(item.msg)}</span>` +
+        `</div>`
+      );
+    }
+    return parts.join("");
+  }
+
+  function setLogContent(el, lines, options = {}) {
+    if (!el) return;
+    el.innerHTML = renderLogHtml(lines, options);
+    if (options.scrollToBottom) {
+      el.scrollTop = el.scrollHeight;
+    }
   }
 
   function setDefaults() {
@@ -586,6 +735,14 @@
     return "tone-mute";
   }
 
+  function grok2Label(value) {
+    return value ? "Grok2" : "-";
+  }
+
+  function grok2Tone(value) {
+    return value ? "tone-ok" : "tone-mute";
+  }
+
   
 
   
@@ -605,6 +762,9 @@
     }
     if (state.accountSub2Filter && state.accountSub2Filter !== "all") {
       params.set("sub2_status", state.accountSub2Filter);
+    }
+    if (state.accountGrok2Filter && state.accountGrok2Filter !== "all") {
+      params.set("grok2", state.accountGrok2Filter);
     }
     if (state.accountSsoFilter && state.accountSsoFilter !== "all") {
       params.set("sso_alive", state.accountSsoFilter);
@@ -724,6 +884,8 @@ function isCpaBusy(account) {
     if (accountsCpaBatchBtnEl) accountsCpaBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsCpaPushBatchBtnEl) accountsCpaPushBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsSub2apiPushBatchBtnEl) accountsSub2apiPushBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
+    if (accountsGrok2MarkBtnEl) accountsGrok2MarkBtnEl.disabled = state.selectedAccountIds.size === 0;
+    if (accountsGrok2UnmarkBtnEl) accountsGrok2UnmarkBtnEl.disabled = state.selectedAccountIds.size === 0;
     const pageIds = state.accounts.map((account) => account.id);
     const pageSelectedCount = pageIds.filter((id) => state.selectedAccountIds.has(id)).length;
     accountsSelectAllEl.checked = pageIds.length > 0 && pageSelectedCount === pageIds.length;
@@ -760,6 +922,7 @@ function isCpaBusy(account) {
         <td class="account-token-status">${statusPill(tokenStatusLabel(account.token_status), tokenStatusTone(account.token_status), account.token_error || account.last_renew_source || "")}</td>
         <td class="account-cpa-status">${statusPill(cpaStatusLabel(account.cpa_status), cpaStatusTone(account.cpa_status), account.cpa_error || account.cpa_path || "")}</td>
         <td class="account-sub2-status">${statusPill(sub2StatusLabel(account.sub2_status), sub2StatusTone(account.sub2_status), account.sub2_error || account.sub2_uploaded_at || "")}</td>
+        <td class="account-grok2-status">${statusPill(grok2Label(account.grok2), grok2Tone(account.grok2), account.grok2_updated_at || "")}</td>
         <td title="${escapeHtml(account.token_checked_at || "")}">${escapeHtml(account.token_expires_at || "-")}</td>
         <td class="account-actions">
           <button class="button button-small button-warn" type="button" data-refresh-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""} title="优先 RT 续期">续期</button>
@@ -968,35 +1131,46 @@ function isCpaBusy(account) {
       return;
     }
     accountCpaLogPanelEl.classList.remove("hidden");
-    accountCpaLogTitleEl.textContent = `账号日志 · ${account.email || `#${account.id}`}`;
-    const lines = [];
-    lines.push(`邮箱: ${account.email || "-"}`);
-    lines.push(`SSO测活: ${ssoAliveLabel(account.sso_alive)}`);
-    lines.push(`Token: ${tokenStatusLabel(account.token_status)}`);
-    lines.push(`CPA: ${cpaStatusLabel(account.cpa_status)}`);
-    lines.push(`Sub2: ${sub2StatusLabel(account.sub2_status)}`);
-    if (account.sub2_error) lines.push(`Sub2错误: ${account.sub2_error}`);
-    if (account.sub2_uploaded_at) lines.push(`Sub2推送时间: ${account.sub2_uploaded_at}`);
-    if (account.cpa_path) lines.push(`文件: ${account.cpa_path}`);
-    if (account.token_expires_at) lines.push(`过期: ${account.token_expires_at}`);
-    if (account.token_checked_at) lines.push(`检测时间: ${account.token_checked_at}`);
-    if (account.last_renew_source) lines.push(`续期来源: ${account.last_renew_source}`);
-    if (account.cpa_uploaded_at) lines.push(`推送时间: ${account.cpa_uploaded_at}`);
-    if (account.token_error) lines.push(`Token错误: ${account.token_error}`);
-    if (account.cpa_error) lines.push(`CPA错误: ${account.cpa_error}`);
+    accountCpaLogTitleEl.textContent = "\u8d26\u53f7\u65e5\u5fd7 \u00b7 " + (account.email || ("#" + account.id));
+
+    const metaRows = [
+      ["\u90ae\u7bb1", account.email || "-"],
+      ["SSO\u6d4b\u6d3b", ssoAliveLabel(account.sso_alive)],
+      ["Token", tokenStatusLabel(account.token_status)],
+      ["CPA", cpaStatusLabel(account.cpa_status)],
+      ["Sub2", sub2StatusLabel(account.sub2_status)],
+    ];
+    if (account.cpa_path) metaRows.push(["\u6587\u4ef6", account.cpa_path]);
+    if (account.token_expires_at) metaRows.push(["\u8fc7\u671f", account.token_expires_at]);
+    if (account.token_checked_at) metaRows.push(["\u68c0\u6d4b\u65f6\u95f4", account.token_checked_at]);
+    if (account.last_renew_source) metaRows.push(["\u7eed\u671f\u6765\u6e90", account.last_renew_source]);
+    if (account.cpa_uploaded_at) metaRows.push(["CPA\u63a8\u9001", account.cpa_uploaded_at]);
+    if (account.sub2_uploaded_at) metaRows.push(["Sub2\u63a8\u9001", account.sub2_uploaded_at]);
+    if (account.token_error) metaRows.push(["Token\u9519\u8bef", account.token_error]);
+    if (account.cpa_error) metaRows.push(["CPA\u9519\u8bef", account.cpa_error]);
+    if (account.sub2_error) metaRows.push(["Sub2\u9519\u8bef", account.sub2_error]);
+
+    const metaHtml = metaRows.map(([k, v]) => (
+      `<div class="log-meta-row"><span class="log-meta-k">${escapeHtml(k)}</span><span class="log-meta-v">${escapeHtml(String(v ?? "-"))}</span></div>`
+    )).join("");
+
+    let detailLines;
     if (account.cpa_log) {
-      lines.push("");
-      lines.push("---- 详细日志（注册后 OAuth/测活 + 账号维护，同一份）----");
-      lines.push(account.cpa_log);
+      detailLines = String(account.cpa_log).split(/\r?\n/);
     } else {
-      lines.push("");
-      lines.push("---- 详细日志 ----");
-      lines.push("暂无详细日志。");
-      lines.push("对本账号执行 续期 / 测活 / OAuth / 推送后，过程会写到这里。");
-      lines.push("注册浏览器步骤仍在「注册任务」控制台；注册后的 OAuth/测活会同步到本日志。");
+      detailLines = [
+        "[Info] \u6682\u65e0\u8be6\u7ec6\u65e5\u5fd7\u3002",
+        "[Info] \u5bf9\u672c\u8d26\u53f7\u6267\u884c \u7eed\u671f / \u6d4b\u6d3b / OAuth / \u63a8\u9001 \u540e\uff0c\u8fc7\u7a0b\u4f1a\u5199\u5230\u8fd9\u91cc\u3002",
+        "[Info] \u6ce8\u518c\u6d4f\u89c8\u5668\u6b65\u9aa4\u5728\u300c\u6ce8\u518c\u4efb\u52a1\u300d\u63a7\u5236\u53f0\uff1b\u6ce8\u518c\u540e OAuth/\u6d4b\u6d3b\u4f1a\u540c\u6b65\u5230\u672c\u65e5\u5fd7\u3002",
+      ];
     }
-    accountCpaLogEl.textContent = lines.join("\n") || "暂无日志";
-    if (scrollToBottom || isCpaBusy(account)) {
+
+    accountCpaLogEl.innerHTML =
+      `<div class="log-meta-block">${metaHtml}</div>` +
+      `<div class="log-section-title">\u64cd\u4f5c\u65e5\u5fd7</div>` +
+      renderLogHtml(detailLines, { emptyText: "\u6682\u65e0\u8be6\u7ec6\u65e5\u5fd7" });
+
+    if (scrollToBottom) {
       accountCpaLogEl.scrollTop = accountCpaLogEl.scrollHeight;
     }
   }
@@ -1215,12 +1389,15 @@ function isCpaBusy(account) {
     }
   }
 
-  async function loadTaskLogs(taskId) {
+    async function loadTaskLogs(taskId) {
     const logData = await fetchJson(`/api/tasks/${taskId}/logs?limit=250`);
-    consoleOutputEl.innerHTML = escapeHtml((logData.lines || []).join("\n"));
-    consoleOutputEl.scrollTop = consoleOutputEl.scrollHeight;
+    setLogContent(consoleOutputEl, logData.lines || [], {
+      emptyText: "暂无输出",
+      scrollToBottom: true,
+    });
     state.logsLoadedTaskId = taskId;
   }
+
 
   async function refreshDetail(options = {}) {
     const forceLogs = options.forceLogs === true;
@@ -1521,10 +1698,34 @@ async function startBatchCpa(mode) {
   if (accountsCpaPushBatchBtnEl) {
     accountsCpaPushBatchBtnEl.addEventListener("click", () => startBatchCpa("push_only"));
   }
+  async function markSelectedGrok2(grok2) {
+    const ids = Array.from(state.selectedAccountIds);
+    if (!ids.length) {
+      accountsMetaEl.textContent = "Please select accounts first";
+      return;
+    }
+    try {
+      const data = await fetchJson("/api/accounts/grok2/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account_ids: ids, grok2 }),
+      });
+      accountsMetaEl.textContent = `${grok2 ? "Marked" : "Unmarked"} Grok2: ${data.updated_count || 0} accounts`;
+      await refreshAccounts();
+    } catch (error) {
+      accountsMetaEl.textContent = `Grok2 mark failed: ${error.message}`;
+    }
+  }
+
   if (accountsSub2apiPushBatchBtnEl) {
     accountsSub2apiPushBatchBtnEl.addEventListener("click", () => startBatchCpa("push_sub2api"));
   }
-  if (accountsCpaCancelBtnEl) {
+  if (accountsGrok2MarkBtnEl) {
+    accountsGrok2MarkBtnEl.addEventListener("click", () => markSelectedGrok2(true));
+  }
+  if (accountsGrok2UnmarkBtnEl) {
+    accountsGrok2UnmarkBtnEl.addEventListener("click", () => markSelectedGrok2(false));
+  }  if (accountsCpaCancelBtnEl) {
     accountsCpaCancelBtnEl.addEventListener("click", async () => {
       if (!window.confirm("确认停止 CPA 队列？当前账号会跑完，剩余排队将取消。")) return;
       try {
@@ -1683,6 +1884,13 @@ accountsDownloadBtnEl.addEventListener("click", async () => {
   if (accountsSub2FilterEl) {
     accountsSub2FilterEl.addEventListener("change", () => {
       state.accountSub2Filter = accountsSub2FilterEl.value;
+      state.accountPage = 1;
+      refreshAccounts();
+    });
+  }
+  if (accountsGrok2FilterEl) {
+    accountsGrok2FilterEl.addEventListener("change", () => {
+      state.accountGrok2Filter = accountsGrok2FilterEl.value;
       state.accountPage = 1;
       refreshAccounts();
     });

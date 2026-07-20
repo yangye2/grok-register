@@ -55,6 +55,71 @@ _outmail_csrf_lock = threading.Lock()
 _outmail_used_cache: dict[str, int] | None = None  # mailbox -> success usage count
 _outmail_used_lock = threading.Lock()
 
+
+def _file_lock_exclusive(lock_path: str, timeout_sec: float = 30.0):
+    """Cross-process exclusive lock (Windows msvcrt / Unix fcntl)."""
+    class _Lock:
+        def __init__(self, path: str, timeout: float):
+            self.path = path
+            self.timeout = max(1.0, float(timeout or 30.0))
+            self._fh = None
+
+        def __enter__(self):
+            parent = os.path.dirname(self.path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            self._fh = open(self.path, "a+", encoding="utf-8")
+            deadline = time.time() + self.timeout
+            last_err = None
+            while True:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        self._fh.seek(0)
+                        # Ensure at least 1 byte exists for locking
+                        if self._fh.read(1) == "":
+                            self._fh.write("0")
+                            self._fh.flush()
+                        self._fh.seek(0)
+                        msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return self
+                except OSError as exc:
+                    last_err = exc
+                    if time.time() >= deadline:
+                        raise TimeoutError(
+                            f"Outmail used-file lock timeout: {self.path} ({last_err})"
+                        ) from exc
+                    time.sleep(0.05)
+
+        def __exit__(self, exc_type, exc, tb):
+            if self._fh is not None:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        self._fh.seek(0)
+                        msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                try:
+                    self._fh.close()
+                except Exception:
+                    pass
+                self._fh = None
+            return False
+
+    return _Lock(lock_path, timeout_sec)
+
+
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
@@ -553,7 +618,17 @@ def outmail_generate_temp_email(
         )
     domain_val = str(domain or "").strip()
     prefix_val = str(username_prefix or "").strip()
-    generated_name = prefix_val or f"tmp{secrets.token_hex(4)}"
+    if prefix_val:
+        generated_name = prefix_val
+    else:
+        # avoid always tmp+hex
+        _anon_styles = [
+            lambda: "u" + secrets.token_hex(random.randint(3, 5)),
+            lambda: "m" + secrets.token_hex(4),
+            lambda: "".join(secrets.choice(string.ascii_lowercase) for _ in range(random.randint(6, 10))),
+            lambda: random.choice(["neo", "sam", "kai", "lee", "rio", "sky"]) + secrets.token_hex(3),
+        ]
+        generated_name = random.choice(_anon_styles)()
 
     candidate_payloads = []
     dedup_keys = set()
@@ -1134,11 +1209,20 @@ def outmail_plus_alias_count() -> int:
 
 
 def outmail_build_alias_email(base_email, suffix_len: int | None = None):
+    """Build plus-alias. Suffix length jitters around config so not every alias is same width."""
     local, domain = base_email.split("@", 1)
-    n = int(suffix_len) if suffix_len is not None else outmail_alias_suffix_len()
-    n = max(2, min(32, n))
+    base_n = int(suffix_len) if suffix_len is not None else outmail_alias_suffix_len()
+    base_n = max(2, min(32, base_n))
+    # jitter ?2 within clamp (keeps config intent, breaks fixed-width fingerprint)
+    n = max(2, min(32, base_n + random.randint(-2, 2)))
     alphabet = string.ascii_lowercase + string.digits
-    suffix = "".join(random.choice(alphabet) for _ in range(n))
+    # prefer letter-start suffix occasionally mixed; pure digit-looking less often
+    if random.random() < 0.75:
+        suffix = "".join(random.choice(alphabet) for _ in range(n))
+    else:
+        suffix = random.choice(string.ascii_lowercase) + "".join(
+            random.choice(alphabet) for _ in range(max(0, n - 1))
+        )
     return f"{local}+{suffix}@{domain}"
 
 
@@ -1205,17 +1289,46 @@ def outmail_filter_account_candidates(accounts, excluded=None):
 
 
 def outmail_used_file_path():
+    """Resolve shared used-mailbox ledger path.
+
+    Absolute path is preferred (console writes one under apps/console/runtime).
+    Relative names resolve in order:
+      1) GROK_REGISTER_OUTMAIL_USED_DIR / GROK_REGISTER_CONSOLE_RUNTIME
+      2) sibling apps/console/runtime when running from source tree
+      3) script directory (legacy task-local fallback)
+    """
     raw = str(_cfg().get("outmail_used_file") or "outmail_used_mailboxes.txt").strip()
     if not raw:
         raw = "outmail_used_mailboxes.txt"
     if os.path.isabs(raw):
-        return raw
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), raw)
+        return os.path.normpath(raw)
+
+    base = (
+        str(os.getenv("GROK_REGISTER_OUTMAIL_USED_DIR") or "").strip()
+        or str(os.getenv("GROK_REGISTER_CONSOLE_RUNTIME") or "").strip()
+    )
+    if not base:
+        # apps/register-runner -> apps/console/runtime (source layout)
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidate = os.path.normpath(
+            os.path.join(here, "..", "console", "runtime")
+        )
+        if os.path.isdir(candidate):
+            base = candidate
+        else:
+            # task_dir copy: prefer env; else keep local (legacy)
+            base = here
+    return os.path.normpath(os.path.join(base, raw))
+
+
+def outmail_used_lock_path() -> str:
+    return outmail_used_file_path() + ".lock"
 
 
 def outmail_load_usage_counts(force=False) -> dict[str, int]:
     """Load per-mailbox success usage counts (lowercase email -> count).
 
+    Shared across tasks via absolute used-file path + cross-process lock.
     File format (append-only, backward compatible):
       email
       email<TAB>ts<TAB>reason...
@@ -1227,20 +1340,33 @@ def outmail_load_usage_counts(force=False) -> dict[str, int]:
             return dict(_outmail_used_cache)
         counts: dict[str, int] = {}
         path = outmail_used_file_path()
+        lock_path = outmail_used_lock_path()
+
+        def _parse_file() -> dict[str, int]:
+            out: dict[str, int] = {}
+            if not os.path.exists(path):
+                return out
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = str(line or "").strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    email = line.split("\t", 1)[0].split(",", 1)[0].strip().lower()
+                    if "@" in email:
+                        out[email] = int(out.get(email, 0)) + 1
+            return out
+
         try:
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = str(line or "").strip()
-                        if not line or line.startswith("#"):
-                            continue
-                        email = line.split("\t", 1)[0].split(",", 1)[0].strip().lower()
-                        if "@" in email:
-                            counts[email] = int(counts.get(email, 0)) + 1
+            with _file_lock_exclusive(lock_path):
+                counts = _parse_file()
         except Exception:
-            pass
+            try:
+                counts = _parse_file()
+            except Exception:
+                counts = {}
         _outmail_used_cache = counts
         return dict(counts)
+
 
 
 def outmail_load_used_mailboxes(force=False):
@@ -1266,7 +1392,7 @@ def outmail_is_mailbox_used(mailbox):
 
 
 def outmail_mark_mailbox_used(mailbox, register_email="", reason="success", log_callback=None):
-    """Record one successful use of a main mailbox.
+    """Record one successful use of a main mailbox (shared ledger, cross-process).
 
     With outmail_plus_alias_count>1, the same mailbox stays selectable until
     usage reaches the quota; only then is it treated as fully used.
@@ -1277,57 +1403,59 @@ def outmail_mark_mailbox_used(mailbox, register_email="", reason="success", log_
         return False
     reg = str(register_email or "").strip()
     path = outmail_used_file_path()
+    lock_path = outmail_used_lock_path()
     limit = outmail_plus_alias_count()
+    new_n = 0
+
+    def _parse_file() -> dict[str, int]:
+        out: dict[str, int] = {}
+        if not os.path.exists(path):
+            return out
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = str(line or "").strip()
+                if not line or line.startswith("#"):
+                    continue
+                email = line.split("\t", 1)[0].split(",", 1)[0].strip().lower()
+                if "@" in email:
+                    out[email] = int(out.get(email, 0)) + 1
+        return out
+
     with _outmail_used_lock:
-        if _outmail_used_cache is None:
-            # populate cache under lock
-            counts: dict[str, int] = {}
-            try:
-                if os.path.exists(path):
-                    with open(path, "r", encoding="utf-8") as f:
-                        for line in f:
-                            line = str(line or "").strip()
-                            if not line or line.startswith("#"):
-                                continue
-                            email = line.split("\t", 1)[0].split(",", 1)[0].strip().lower()
-                            if "@" in email:
-                                counts[email] = int(counts.get(email, 0)) + 1
-            except Exception:
-                counts = {}
-            _outmail_used_cache = counts
-        counts = dict(_outmail_used_cache)
-        prev = int(counts.get(mb, 0) or 0)
-        new_n = prev + 1
-        counts[mb] = new_n
-        _outmail_used_cache = counts
         try:
-            parent = os.path.dirname(path)
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            with open(path, "a", encoding="utf-8") as f:
-                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                extra = ("\t" + reg) if reg else ""
-                f.write(f"{mb}\t{ts}\t{reason}\tuse={new_n}/{limit}{extra}\n")
+            with _file_lock_exclusive(lock_path):
+                counts = _parse_file()
+                prev = int(counts.get(mb, 0) or 0)
+                new_n = prev + 1
+                parent = os.path.dirname(path)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                with open(path, "a", encoding="utf-8") as f:
+                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    extra = ("\t" + reg) if reg else ""
+                    f.write(f"{mb}\t{ts}\t{reason}\tuse={new_n}/{limit}{extra}\n")
+                counts[mb] = new_n
+                _outmail_used_cache = counts
         except Exception as exc:
-            if prev <= 0:
-                counts.pop(mb, None)
-            else:
-                counts[mb] = prev
-            _outmail_used_cache = counts
             if log_callback:
-                log_callback(f"[Debug] 写入已用邮箱失败: {exc}")
+                log_callback(f"[Debug] ????????: {exc}")
+            try:
+                _outmail_used_cache = _parse_file()
+            except Exception:
+                pass
             return False
     if log_callback:
         if new_n >= limit:
             log_callback(
-                f"[Debug] Outmail 主邮箱已达使用上限 {new_n}/{limit}，标记用尽: {mb}"
+                f"[Debug] Outmail ????????? {new_n}/{limit}?????: {mb}"
             )
         else:
-            msg = f"[Debug] Outmail 已记录使用次数 {new_n}/{limit}: {mb}"
+            msg = f"[Debug] Outmail ??????? {new_n}/{limit}: {mb}"
             if reg:
                 msg += f" (alias={reg})"
             log_callback(msg)
     return True
+
 
 
 def outmail_select_mailbox(excluded=None):
@@ -1337,9 +1465,12 @@ def outmail_select_mailbox(excluded=None):
     group_id = _cfg().get("outmail_group_id", None)
     batch = 50
 
-    # 持久化已用：注册成功的主邮箱不再选取
+    # Global shared used ledger: skip mailboxes that reached alias quota
     if bool(_cfg().get("outmail_exclude_used", True)):
-        excluded |= outmail_load_used_mailboxes()
+        global _outmail_used_cache
+        with _outmail_used_lock:
+            _outmail_used_cache = None
+        excluded |= outmail_load_used_mailboxes(force=True)
 
     with _outmail_lock:
         excluded = set(excluded) | set(_outmail_in_use)
@@ -1379,7 +1510,7 @@ def outmail_select_mailbox(excluded=None):
             picked = _next_from_cache()
 
         if not picked:
-            used_n = len(outmail_load_used_mailboxes()) if bool(
+            used_n = len(outmail_load_used_mailboxes(force=True)) if bool(
                 _cfg().get("outmail_exclude_used", True)
             ) else 0
             raise Exception(
