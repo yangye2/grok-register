@@ -1928,6 +1928,27 @@ def load_cpa_export_module():
     return module
 
 
+
+def load_cpa_to_sub2api_module():
+    """Load apps/cpa-worker/cpa_to_sub2api.py for Sub2 export/push helpers."""
+    module_path = CPA_WORKER_DIR / "cpa_to_sub2api.py"
+    if not module_path.is_file():
+        raise FileNotFoundError(f"Sub2API module not found: {module_path}")
+    worker_s = str(CPA_WORKER_DIR)
+    if worker_s not in sys.path:
+        sys.path.insert(0, worker_s)
+    existing = sys.modules.get("cpa_to_sub2api")
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location("console_cpa_to_sub2api", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load Sub2API module: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    sys.modules["console_cpa_to_sub2api"] = module
+    return module
+
+
 def resolve_account_cpa_path(row: sqlite3.Row) -> Path | None:
     raw_path = str(row_get(row, "cpa_path", "") or "").strip()
     if raw_path:
@@ -4524,6 +4545,94 @@ def export_accounts_csv(payload: AccountExportPayload) -> Any:
     )
 
 
+
+@app.post("/api/accounts/export-sub2")
+def export_accounts_sub2(payload: AccountExportPayload) -> Any:
+    """Export selected accounts as one Sub2API import JSON bundle.
+
+    Requires each account to already have a CPA auth file (generate/OAuth first).
+    """
+    from fastapi.responses import Response
+
+    ids = [int(x) for x in (payload.account_ids or []) if int(x) > 0]
+    if not ids:
+        raise HTTPException(status_code=400, detail="account_ids cannot be empty")
+
+    try:
+        sub_mod = load_cpa_to_sub2api_module()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Sub2API 模块加载失败: {exc}") from exc
+
+    defaults = normalize_console_cpa_paths(merged_defaults())
+    push_settings = sub_mod.get_sub2api_push_settings(defaults)
+    proxy_url = str(defaults.get("sub2api_default_proxy") or "").strip()
+
+    auth_items: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for aid in ids:
+        row = fetch_one("SELECT * FROM accounts WHERE id = ?", (aid,))
+        if row is None:
+            skipped.append({"id": aid, "reason": "not_found"})
+            continue
+        if int(row_get(row, "deleted", 0) or 0):
+            skipped.append({"id": aid, "email": str(row_get(row, "email", "") or ""), "reason": "in_recycle_bin"})
+            continue
+        email = str(row_get(row, "email", "") or "").strip()
+        cpa_path = resolve_account_cpa_path(row)
+        if cpa_path is None:
+            skipped.append({"id": aid, "email": email, "reason": "missing_cpa_auth"})
+            continue
+        try:
+            auth = json.loads(cpa_path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            skipped.append({"id": aid, "email": email, "reason": f"invalid_cpa_json: {exc}"})
+            continue
+        if not isinstance(auth, dict):
+            skipped.append({"id": aid, "email": email, "reason": "cpa_auth_not_object"})
+            continue
+        if not str(auth.get("email") or "").strip() and email:
+            auth = dict(auth)
+            auth["email"] = email
+        auth_items.append(auth)
+
+    if not auth_items:
+        detail = "没有可导出的 Sub2 账号（请先生成 CPA 授权）"
+        if skipped:
+            reasons = ", ".join(sorted({str(x.get("reason") or "") for x in skipped if x.get("reason")}))
+            detail = f"{detail}: {reasons}"
+        raise HTTPException(status_code=404, detail=detail)
+
+    try:
+        bundle = sub_mod.build_sub2api_export_bundle(
+            auth_items,
+            push_settings,
+            proxy_url=proxy_url,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"构建 Sub2 导出失败: {exc}") from exc
+
+    if not isinstance(bundle, dict):
+        raise HTTPException(status_code=500, detail="Sub2 导出结果无效")
+
+    bundle = dict(bundle)
+    bundle["source"] = "grok-register-console"
+    bundle["requested_count"] = len(ids)
+    bundle["exported_count"] = len(auth_items)
+    bundle["skipped_count"] = len(skipped)
+    if skipped:
+        bundle["skipped"] = skipped
+
+    filename = f"sub2_accounts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    content = json.dumps(bundle, ensure_ascii=False, indent=2) + chr(10)
+    return Response(
+        content=content.encode("utf-8"),
+        media_type="application/json; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Exported-Count": str(len(auth_items)),
+            "X-Skipped-Count": str(len(skipped)),
+        },
+    )
 
 @app.get("/api/accounts/cpa/queue/export")
 def export_cpa_queue_results() -> Any:

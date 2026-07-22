@@ -69,6 +69,7 @@
   const accountsGrok2UnmarkBtnEl = document.getElementById("accountsGrok2UnmarkBtn");
   const accountsCpaCancelBtnEl = document.getElementById("accountsCpaCancelBtn");
   const accountsCpaExportBtnEl = document.getElementById("accountsCpaExportBtn");
+  const accountsSub2ExportBtnEl = document.getElementById("accountsSub2ExportBtn");
   const accountsSelectFilteredBtnEl = document.getElementById("accountsSelectFilteredBtn");
   const accountsClearFilteredBtnEl = document.getElementById("accountsClearFilteredBtn");
   const accountsLogBtnEl = document.getElementById("accountsLogBtn");
@@ -1048,6 +1049,9 @@ function isCpaBusy(account) {
     if (accountsCpaExportBtnEl) {
       accountsCpaExportBtnEl.disabled = state.selectedAccountIds.size === 0;
     }
+    if (accountsSub2ExportBtnEl) {
+      accountsSub2ExportBtnEl.disabled = state.selectedAccountIds.size === 0 || state.accountDeletedFilter === "deleted";
+    }
     accountsPrevPageBtnEl.disabled = state.accountPage <= 1;
     accountsNextPageBtnEl.disabled = state.accountPage >= state.accountTotalPages;
     accountsPageMetaEl.textContent = state.accountTotal
@@ -1754,6 +1758,7 @@ function isCpaBusy(account) {
     }
     if (accountsCpaCancelBtnEl) accountsCpaCancelBtnEl.disabled = !q.active;
     if (accountsCpaExportBtnEl) accountsCpaExportBtnEl.disabled = state.selectedAccountIds.size === 0;
+    if (accountsSub2ExportBtnEl) accountsSub2ExportBtnEl.disabled = state.selectedAccountIds.size === 0 || state.accountDeletedFilter === "deleted";
   }
 
   async function refreshCpaQueue() {
@@ -1978,6 +1983,59 @@ if (accountsCpaCancelBtnEl) {
         } catch (e2) {
           accountsMetaEl.textContent = `导出失败: ${error.message || error}`;
         }
+      }
+    });
+  }
+
+  if (accountsSub2ExportBtnEl) {
+    accountsSub2ExportBtnEl.addEventListener("click", async () => {
+      const ids = Array.from(state.selectedAccountIds);
+      if (!ids.length) {
+        accountsMetaEl.textContent = "请先选择要导出的账号";
+        return;
+      }
+      if (state.accountDeletedFilter === "deleted") {
+        accountsMetaEl.textContent = "回收站账号请先恢复再导出 SUB2";
+        return;
+      }
+      accountsSub2ExportBtnEl.disabled = true;
+      try {
+        const response = await fetch("/api/accounts/export-sub2", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ account_ids: ids }),
+        });
+        if (!response.ok) {
+          let detail = `HTTP ${response.status}`;
+          try {
+            const data = await response.json();
+            detail = data.detail || data.message || detail;
+          } catch (e) {}
+          throw new Error(detail);
+        }
+        const exported = response.headers.get("X-Exported-Count") || "";
+        const skipped = response.headers.get("X-Skipped-Count") || "";
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        const cd = response.headers.get("content-disposition") || "";
+        const m = /filename="?([^";]+)"?/i.exec(cd);
+        a.href = url;
+        a.download = (m && m[1]) || (`sub2_accounts_${Date.now()}.json`);
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        const exportedN = Number(exported || 0);
+        const skippedN = Number(skipped || 0);
+        accountsMetaEl.textContent = skippedN > 0
+          ? `已导出 SUB2 ${exportedN} 个，跳过 ${skippedN} 个（缺 CPA 授权等）`
+          : `已导出 SUB2 ${exportedN || ids.length} 个账号`;
+      } catch (error) {
+        accountsMetaEl.textContent = `导出 SUB2 失败: ${error.message || error}`;
+      } finally {
+        accountsSub2ExportBtnEl.disabled = state.selectedAccountIds.size === 0 || state.accountDeletedFilter === "deleted";
       }
     });
   }
