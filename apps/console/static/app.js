@@ -436,6 +436,98 @@
     return Math.max(0, Math.min(100, Math.round((handled / target) * 100)));
   }
 
+  function parseTaskTimestamp(value) {
+    const text = String(value || "").trim();
+    if (!text) return null;
+    // Backend stores local wall time as "YYYY-MM-DD HH:MM:SS".
+    const normalized = text.includes("T") ? text : text.replace(" ", "T");
+    const ms = Date.parse(normalized);
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  function formatElapsedSeconds(seconds) {
+    if (seconds == null || !Number.isFinite(Number(seconds))) return "-";
+    const total = Math.max(0, Math.floor(Number(seconds)));
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+    if (hours > 0) {
+      return `${hours}h ${String(minutes).padStart(2, "0")}m ${String(secs).padStart(2, "0")}s`;
+    }
+    if (minutes > 0) {
+      return `${minutes}m ${String(secs).padStart(2, "0")}s`;
+    }
+    return `${secs}s`;
+  }
+
+  function getTaskTimingStats(task) {
+    // Prefer backend-derived fields; recompute as fallback for older API responses.
+    const startedAt = task?.started_at || "";
+    const finishedAt = task?.finished_at || "";
+    const status = String(task?.status || "");
+    const completed = Math.max(Number(task?.completed_count) || 0, Number(task?.account_count) || 0);
+
+    // For active tasks, recompute live so elapsed ticks between polls.
+    if (["running", "stopping"].includes(status)) {
+      const startMs = parseTaskTimestamp(startedAt);
+      if (startMs == null) {
+        return {
+          startedAt: "-",
+          elapsedSeconds: null,
+          elapsedDisplay: "-",
+          accountsPerMinute: null,
+          accountsPerMinuteDisplay: "-",
+        };
+      }
+      const liveElapsed = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+      const liveRate = Number(((completed * 60) / Math.max(liveElapsed, 1)).toFixed(2));
+      return {
+        startedAt: startedAt || "-",
+        elapsedSeconds: liveElapsed,
+        elapsedDisplay: formatElapsedSeconds(liveElapsed),
+        accountsPerMinute: liveRate,
+        accountsPerMinuteDisplay: `${liveRate.toFixed(2)}/min`,
+      };
+    }
+
+    let elapsedSeconds = task?.elapsed_seconds;
+    if (elapsedSeconds == null || !Number.isFinite(Number(elapsedSeconds))) {
+      const startMs = parseTaskTimestamp(startedAt);
+      if (startMs == null) {
+        elapsedSeconds = null;
+      } else {
+        const endMs = parseTaskTimestamp(finishedAt) || Date.now();
+        elapsedSeconds = Math.max(0, Math.floor((endMs - startMs) / 1000));
+      }
+    } else {
+      elapsedSeconds = Math.max(0, Math.floor(Number(elapsedSeconds)));
+    }
+
+    let rate = task?.accounts_per_minute;
+    if (rate == null || !Number.isFinite(Number(rate))) {
+      rate = elapsedSeconds == null
+        ? null
+        : Number(((completed * 60) / Math.max(elapsedSeconds, 1)).toFixed(2));
+    } else {
+      rate = Number(Number(rate).toFixed(2));
+    }
+
+    const elapsedDisplay = (task?.elapsed_display && task.elapsed_display !== "-")
+      ? String(task.elapsed_display)
+      : formatElapsedSeconds(elapsedSeconds);
+    const rateDisplay = (task?.accounts_per_minute_display && task.accounts_per_minute_display !== "-")
+      ? String(task.accounts_per_minute_display)
+      : (rate == null ? "-" : `${rate.toFixed(2)}/min`);
+
+    return {
+      startedAt: startedAt || "-",
+      elapsedSeconds,
+      elapsedDisplay: elapsedSeconds == null ? "-" : elapsedDisplay,
+      accountsPerMinute: rate,
+      accountsPerMinuteDisplay: elapsedSeconds == null ? "-" : rateDisplay,
+    };
+  }
+
   async function fetchAllTasksForUi() {
     // 后端 page_size 上限 200，用分页拉全量（筛选下拉用）
     const pageSize = 200;
@@ -579,7 +671,10 @@
       return;
     }
 
-    taskListEl.innerHTML = state.tasks.map((task) => `
+    taskListEl.innerHTML = state.tasks.map((task) => {
+      const timing = getTaskTimingStats(task);
+      const progress = getTaskProgress(task);
+      return `
       <div class="task-card ${task.id === state.selectedTaskId ? "selected" : ""}" data-task-id="${task.id}" role="button" tabindex="0">
         <div class="task-row">
           <strong title="${escapeHtml(task.name)}">#${task.id} ${escapeHtml(task.name)}</strong>
@@ -588,14 +683,16 @@
         <div class="task-meta-group">
           <div class="task-subrow">执行次数 ${task.target_count}</div>
           <div class="task-subrow">本地账号 ${task.account_count || 0}</div>
+          <div class="task-subrow">开始 ${escapeHtml(timing.startedAt)}</div>
+          <div class="task-subrow">用时 ${escapeHtml(timing.elapsedDisplay)} · ${escapeHtml(timing.accountsPerMinuteDisplay)}</div>
         </div>
         <div class="task-card-progress">
           <div class="task-row">
-            <span class="task-action-hint">进度 ${getTaskProgress(task)}%</span>
+            <span class="task-action-hint">进度 ${progress}%</span>
             <span class="task-action-hint">${task.completed_count}/${task.target_count}</span>
           </div>
           <div class="task-progress-bar">
-            <div class="task-progress-fill" style="width:${getTaskProgress(task)}%"></div>
+            <div class="task-progress-fill" style="width:${progress}%"></div>
           </div>
         </div>
         <div class="task-actions">
@@ -603,7 +700,8 @@
           <button class="button button-danger button-small" type="button" data-delete-task-id="${task.id}" data-account-count="${task.account_count || 0}">删除</button>
         </div>
       </div>
-    `).join("");
+    `;
+    }).join("");
 
     taskListEl.querySelectorAll("[data-task-id]").forEach((card) => {
       const selectTask = () => {
@@ -671,12 +769,16 @@
   function renderTaskDetail(task) {
     detailTitleEl.textContent = `任务 #${task.id} · ${task.name}`;
     stopBtnEl.disabled = !["queued", "running", "stopping"].includes(task.status);
+    const timing = getTaskTimingStats(task);
     detailSummaryEl.innerHTML = [
       ["状态", task.status],
       ["目标次数", task.target_count],
       ["成功数", task.completed_count],
       ["失败数", task.failed_count],
       ["账号数", task.account_count || 0],
+      ["开始时间", timing.startedAt],
+      ["用时", timing.elapsedDisplay],
+      ["账号/分", timing.accountsPerMinuteDisplay],
       ["当前轮次", task.current_round],
       ["当前阶段", task.current_phase || "-"],
     ].map(([label, value]) => `

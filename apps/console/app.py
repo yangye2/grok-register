@@ -1579,16 +1579,82 @@ def account_success_stats(task_id: int) -> dict[str, Any]:
     return {"count": count, "last_email": last_email}
 
 
+def parse_task_timestamp(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def format_elapsed_seconds(seconds: int | None) -> str:
+    if seconds is None:
+        return "-"
+    total = max(0, int(seconds))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    if minutes > 0:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def task_timing_stats(
+    started_at: Any,
+    finished_at: Any,
+    status: str,
+    completed_count: int,
+) -> dict[str, Any]:
+    """Derive elapsed time and average accounts/min from task timestamps."""
+    started = parse_task_timestamp(started_at)
+    if started is None:
+        return {
+            "elapsed_seconds": None,
+            "elapsed_display": "-",
+            "accounts_per_minute": None,
+            "accounts_per_minute_display": "-",
+        }
+
+    finished = parse_task_timestamp(finished_at)
+    active = str(status or "") in {STATUS_RUNNING, STATUS_STOPPING}
+    if finished is not None:
+        end = finished
+    elif active:
+        end = datetime.now()
+    else:
+        # Finished tasks should have finished_at; fall back to now for legacy rows.
+        end = datetime.now()
+
+    elapsed_seconds = max(0, int((end - started).total_seconds()))
+    # Avoid divide-by-zero right after start: treat at least 1 second.
+    rate = round((max(0, int(completed_count or 0)) * 60.0) / max(elapsed_seconds, 1), 2)
+    return {
+        "elapsed_seconds": elapsed_seconds,
+        "elapsed_display": format_elapsed_seconds(elapsed_seconds),
+        "accounts_per_minute": rate,
+        "accounts_per_minute_display": f"{rate:.2f}/min",
+    }
+
+
 def serialize_task(row: sqlite3.Row) -> dict[str, Any]:
     task_id = int(row["id"])
     acct = account_success_stats(task_id)
     # Prefer DB account count; keep stored value only if somehow higher (legacy log-only edge cases).
     completed = max(int(row["completed_count"] or 0), int(acct["count"]))
     last_email = acct["last_email"] or (row["last_email"] or "")
+    started_at = row["started_at"]
+    finished_at = row["finished_at"]
+    status = row["status"]
+    timing = task_timing_stats(started_at, finished_at, str(status or ""), completed)
     return {
         "id": task_id,
         "name": row["name"],
-        "status": row["status"],
+        "status": status,
         "target_count": int(row["target_count"]),
         "completed_count": completed,
         "failed_count": int(row["failed_count"]),
@@ -1601,8 +1667,12 @@ def serialize_task(row: sqlite3.Row) -> dict[str, Any]:
         "notes": row["notes"] or "",
         "config": json.loads(row["config_json"]),
         "created_at": row["created_at"],
-        "started_at": row["started_at"],
-        "finished_at": row["finished_at"],
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "elapsed_seconds": timing["elapsed_seconds"],
+        "elapsed_display": timing["elapsed_display"],
+        "accounts_per_minute": timing["accounts_per_minute"],
+        "accounts_per_minute_display": timing["accounts_per_minute_display"],
         "exit_code": row["exit_code"],
         "pid": row["pid"],
     }
