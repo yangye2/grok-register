@@ -26,6 +26,10 @@
     taskPageSize: 20,
     taskTotal: 0,
     taskTotalPages: 1,
+    // Poll cadence: slow list/queue; keep active task logs hot.
+    lastTasksPollAt: 0,
+    lastCpaQueuePollAt: 0,
+    lastDetailPollAt: 0,
   };
 
   const taskListEl = document.getElementById("taskList");
@@ -708,8 +712,9 @@
       const selectTask = () => {
         state.selectedTaskId = Number(card.dataset.taskId);
         state.logsLoadedTaskId = null;
+        state.lastDetailPollAt = 0; // load logs immediately for the selected task
         renderTaskList();
-        refreshDetail();
+        refreshDetail({ forceLogs: true });
       };
       card.addEventListener("click", (event) => {
         if (event.target.closest("[data-delete-task-id]")) {
@@ -1600,7 +1605,13 @@ function isCpaBusy(account) {
   async function refreshAll(options = {}) {
     const force = options.force === true;
     try {
+      if (force) {
+        state.lastTasksPollAt = 0;
+        state.lastCpaQueuePollAt = 0;
+        state.lastDetailPollAt = 0;
+      }
       await refreshTasks();
+      state.lastTasksPollAt = Date.now();
       if (!state.selectedTaskId) {
         state.logsLoadedTaskId = null;
         renderDefaultMailDetail();
@@ -2304,11 +2315,80 @@ if (accountsSsoFilterEl) {
   activateTab("register");
   refreshHealth();
   refreshAccounts();
+  // Poll policy:
+  // - /api/tasks list: 8s (was 2s via refreshAll)
+  // - /api/accounts/cpa/queue: 8s idle / 4s active (was 2s)
+  // - selected running/queued/stopping task logs+detail: keep 2s
+  // - accounts / health / metrics: unchanged or slightly slower
+  const TASKS_POLL_MS = 8000;
+  const CPA_QUEUE_IDLE_MS = 8000;
+  const CPA_QUEUE_ACTIVE_MS = 4000;
+  const ACTIVE_TASK_LOG_POLL_MS = 2000;
+
+  async function pollTasksList() {
+    const now = Date.now();
+    if (now - (state.lastTasksPollAt || 0) < TASKS_POLL_MS - 50) {
+      return;
+    }
+    state.lastTasksPollAt = now;
+    try {
+      await refreshTasks();
+      // metrics depend on task list snapshot
+      if (typeof updateMetrics === "function") {
+        updateMetrics();
+      }
+    } catch (_error) {
+      // ignore poll errors
+    }
+  }
+
+  async function pollCpaQueueSmart() {
+    const now = Date.now();
+    const q = state.cpaQueue;
+    const active = Boolean(q && (q.active || Number(q.queue_size || 0) > 0 || q.current_id));
+    const interval = active ? CPA_QUEUE_ACTIVE_MS : CPA_QUEUE_IDLE_MS;
+    if (now - (state.lastCpaQueuePollAt || 0) < interval - 50) {
+      return;
+    }
+    state.lastCpaQueuePollAt = now;
+    await refreshCpaQueue();
+  }
+
+  async function pollActiveTaskLogs() {
+    if (!state.selectedTaskId) {
+      return;
+    }
+    const listed = (state.tasks || []).find((t) => t.id === state.selectedTaskId);
+    const isActive = listed
+      ? ACTIVE_TASK_STATUSES.has(listed.status)
+      : true; // unknown: still try once so UI can settle
+    if (!isActive && state.logsLoadedTaskId === state.selectedTaskId) {
+      return;
+    }
+    const now = Date.now();
+    if (isActive && now - (state.lastDetailPollAt || 0) < ACTIVE_TASK_LOG_POLL_MS - 50) {
+      return;
+    }
+    state.lastDetailPollAt = now;
+    try {
+      await refreshDetail({ forceLogs: isActive || state.logsLoadedTaskId !== state.selectedTaskId });
+    } catch (_error) {
+      // ignore poll errors
+    }
+  }
+
+  // Initial burst
   refreshAll();
-  window.setInterval(refreshAll, 2000);
+  refreshCpaQueue();
+
+  // Tick every 1s; each poller enforces its own cadence.
+  window.setInterval(() => {
+    pollTasksList();
+    pollCpaQueueSmart();
+    pollActiveTaskLogs();
+  }, 1000);
   window.setInterval(refreshHealth, 15000);
   window.setInterval(refreshAccounts, 5000);
-  window.setInterval(refreshCpaQueue, 2000);
-  window.setInterval(updateMetrics, 3000);
+  window.setInterval(updateMetrics, 5000);
 })();
 
