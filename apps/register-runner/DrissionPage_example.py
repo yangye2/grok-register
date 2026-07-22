@@ -1656,23 +1656,69 @@ return { url: location.href, inputs, buttons };
     raise Exception("未找到验证码输入框或确认邮箱按钮")
 
 
-def getTurnstileToken():
+def getTurnstileToken(timeout=None):
+    """Solve final-page Turnstile with a hard wall-clock budget.
+
+    Returns token string on success, or None on timeout/failure (does not hang forever).
+    Env: GROK_REGISTER_TURNSTILE_TIMEOUT (seconds, default 25).
+    """
+    try:
+        default_timeout = float(os.environ.get("GROK_REGISTER_TURNSTILE_TIMEOUT", "25") or 25)
+    except (TypeError, ValueError):
+        default_timeout = 25.0
+    timeout = float(timeout if timeout is not None else default_timeout)
+    timeout = max(5.0, min(timeout, 120.0))
+    deadline = time.time() + timeout
+    started = time.time()
+    attempt = 0
+
     # 复用现有 turnstile 处理逻辑，在最终注册页需要时再触发。
-    page.run_js("try { turnstile.reset() } catch(e) { }")
+    try:
+        page.run_js("try { turnstile.reset() } catch(e) { }")
+    except Exception as reset_exc:
+        print(f"[!] Turnstile reset 跳过: {reset_exc}", flush=True)
 
-    turnstileResponse = None
-
-    for i in range(0, 15):
+    while time.time() < deadline:
+        attempt += 1
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        # Keep element waits short so a dead shadow DOM cannot stall the whole task.
+        ele_timeout = max(0.2, min(1.0, remaining / 4.0))
         try:
-            turnstileResponse = page.run_js("try { return turnstile.getResponse() } catch(e) { return null }")
-            if turnstileResponse:
-                return turnstileResponse
+            turnstile_response = page.run_js(
+                "try { return turnstile.getResponse() } catch(e) { return null }"
+            )
+            if turnstile_response:
+                print(
+                    f"[*] Turnstile token 已获取 (attempt={attempt}, "
+                    f"elapsed={time.time() - started:.1f}s)",
+                    flush=True,
+                )
+                return turnstile_response
 
-            challengeSolution = page.ele("@name=cf-turnstile-response")
-            challengeWrapper = challengeSolution.parent()
-            challengeIframe = challengeWrapper.shadow_root.ele("tag:iframe")
+            challenge_solution = page.ele("@name=cf-turnstile-response", timeout=ele_timeout)
+            if not challenge_solution:
+                time.sleep(min(random.uniform(0.45, 0.90), max(0.05, deadline - time.time())))
+                continue
 
-            challengeIframe.run_js("""
+            challenge_wrapper = challenge_solution.parent()
+            if challenge_wrapper is None:
+                time.sleep(min(random.uniform(0.45, 0.90), max(0.05, deadline - time.time())))
+                continue
+
+            challenge_iframe = None
+            try:
+                challenge_iframe = challenge_wrapper.shadow_root.ele("tag:iframe", timeout=ele_timeout)
+            except Exception:
+                challenge_iframe = None
+            if not challenge_iframe:
+                time.sleep(min(random.uniform(0.45, 0.90), max(0.05, deadline - time.time())))
+                continue
+
+            try:
+                challenge_iframe.run_js(
+                    """
 window.dtp = 1
 function getRandomInt(min, max) {
     return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -1684,15 +1730,51 @@ let screenY = getRandomInt(400, 600);
 
 Object.defineProperty(MouseEvent.prototype, 'screenX', { value: screenX });
 Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
-                        """)
+"""
+                )
+            except Exception as js_exc:
+                print(f"[Debug] Turnstile iframe 注入失败: {js_exc}", flush=True)
 
-            challengeIframeBody = challengeIframe.ele("tag:body").shadow_root
-            challengeButton = challengeIframeBody.ele("tag:input")
-            challengeButton.click()
-        except:
-            pass
-        time.sleep(random.uniform(0.700, 1.350))
-    raise Exception("failed to solve turnstile")
+            challenge_button = None
+            try:
+                challenge_iframe_body = challenge_iframe.ele("tag:body", timeout=ele_timeout).shadow_root
+                challenge_button = challenge_iframe_body.ele("tag:input", timeout=ele_timeout)
+            except Exception:
+                challenge_button = None
+
+            if challenge_button:
+                try:
+                    challenge_button.click()
+                except Exception as click_exc:
+                    # Fallback: JS click when native click stalls.
+                    try:
+                        challenge_button.click(by_js=True)
+                    except Exception:
+                        print(f"[Debug] Turnstile 点击失败: {click_exc}", flush=True)
+            else:
+                if attempt == 1 or attempt % 5 == 0:
+                    print(
+                        f"[Debug] Turnstile 控件未就绪 (attempt={attempt}, "
+                        f"remaining={max(0.0, deadline - time.time()):.1f}s)",
+                        flush=True,
+                    )
+        except PageDisconnectedError:
+            print("[!] Turnstile 处理时页面已断开", flush=True)
+            return None
+        except Exception as solve_exc:
+            if attempt == 1 or attempt % 5 == 0:
+                print(f"[Debug] Turnstile 处理异常: {solve_exc}", flush=True)
+
+        sleep_for = min(random.uniform(0.700, 1.350), max(0.05, deadline - time.time()))
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+
+    print(
+        f"[!] Turnstile 求解超时/失败 (attempts={attempt}, "
+        f"elapsed={time.time() - started:.1f}s, budget={timeout:.0f}s)",
+        flush=True,
+    )
+    return None
 
 
 def _build_register_password(min_len: int = 14, max_len: int = 22) -> str:
@@ -1792,11 +1874,23 @@ def build_profile():
     return given_name, family_name, password
 
 
-def fill_profile_and_submit(timeout=30):
+def fill_profile_and_submit(timeout=None):
     # 在验证码通过后，直接锁定“可见且可写”的真实输入框，避免命中隐藏节点或 React 受控副本。
+    # 默认总预算覆盖 Turnstile 多次硬超时重试，避免卡在真人化点击节点。
+    if timeout is None:
+        try:
+            timeout = float(os.environ.get("GROK_REGISTER_PROFILE_TIMEOUT", "70") or 70)
+        except (TypeError, ValueError):
+            timeout = 70.0
+    timeout = max(20.0, float(timeout))
     given_name, family_name, password = build_profile()
     deadline = time.time() + timeout
     turnstile_token = ""
+    turnstile_attempts = 0
+    try:
+        turnstile_max_attempts = max(1, int(os.environ.get("GROK_REGISTER_TURNSTILE_ATTEMPTS", "2") or 2))
+    except (TypeError, ValueError):
+        turnstile_max_attempts = 2
 
     while time.time() < deadline:
         filled = page.run_js(
@@ -1955,11 +2049,33 @@ return value ? 'ready' : 'pending';
         )
 
         if turnstile_state == "pending" and not turnstile_token:
-            print("[*] 检测到最终注册页存在 Turnstile，开始使用现有真人化点击逻辑。")
-            turnstile_token = getTurnstileToken()
+            remaining = deadline - time.time()
+            if remaining < 3:
+                raise Exception("最终注册页 Turnstile 超时：剩余时间不足")
+            if turnstile_attempts >= turnstile_max_attempts:
+                raise Exception(
+                    f"最终注册页 Turnstile 求解失败：已重试 {turnstile_attempts} 次"
+                )
+            turnstile_attempts += 1
+            # Leave a few seconds for submit after token solve.
+            turnstile_budget = max(5.0, min(25.0, remaining - 3.0))
+            print(
+                f"[*] 检测到最终注册页存在 Turnstile，开始使用现有真人化点击逻辑。"
+                f" (attempt={turnstile_attempts}/{turnstile_max_attempts}, budget={turnstile_budget:.0f}s)",
+                flush=True,
+            )
+            try:
+                turnstile_token = getTurnstileToken(timeout=turnstile_budget) or ""
+            except PageDisconnectedError:
+                raise
+            except Exception as turnstile_exc:
+                print(f"[!] Turnstile 调用异常: {turnstile_exc}", flush=True)
+                turnstile_token = ""
+
             if turnstile_token:
-                synced = page.run_js(
-                    """
+                try:
+                    synced = page.run_js(
+                        """
 const token = arguments[0];
 const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
 if (!challengeInput) {
@@ -1974,16 +2090,39 @@ if (nativeSetter) {
 challengeInput.dispatchEvent(new Event('input', { bubbles: true }));
 challengeInput.dispatchEvent(new Event('change', { bubbles: true }));
 return String(challengeInput.value || '').trim() === String(token || '').trim();
-                    """,
-                    turnstile_token,
-                )
+                        """,
+                        turnstile_token,
+                    )
+                except Exception as sync_exc:
+                    print(f"[!] Turnstile 同步到表单失败: {sync_exc}", flush=True)
+                    synced = False
+                    turnstile_token = ""
                 if synced:
-                    print("[*] Turnstile 响应已同步到最终注册表单。")
+                    print("[*] Turnstile 响应已同步到最终注册表单。", flush=True)
+                else:
+                    print("[!] Turnstile token 未能写入表单，将按预算重试。", flush=True)
+                    turnstile_token = ""
+            else:
+                print(
+                    f"[!] Turnstile 本轮未通过 (attempt={turnstile_attempts}/{turnstile_max_attempts})",
+                    flush=True,
+                )
+                if turnstile_attempts >= turnstile_max_attempts:
+                    raise Exception(
+                        f"最终注册页 Turnstile 求解失败/超时（已尝试 {turnstile_attempts} 次）"
+                    )
+                # Brief backoff then continue outer fill loop if budget remains.
+                time.sleep(min(random.uniform(0.80, 1.40), max(0.05, deadline - time.time())))
+                continue
 
         time.sleep(random.uniform(0.840, 1.620))
 
         try:
-            submit_button = page.ele('tag:button@@text()=完成注册') or page.ele('tag:button@@text():Create Account') or page.ele('tag:button@@text():Sign up')
+            submit_button = (
+                page.ele("tag:button@@text()=完成注册", timeout=0.6)
+                or page.ele("tag:button@@text():Create Account", timeout=0.6)
+                or page.ele("tag:button@@text():Sign up", timeout=0.6)
+            )
         except Exception:
             submit_button = None
 
@@ -2030,7 +2169,10 @@ return challengeInput ? String(challengeInput.value || '').trim() : 'not-found';
 
         time.sleep(random.uniform(0.350, 0.675))
 
-    raise Exception("未找到最终注册表单或完成注册按钮")
+    raise Exception(
+        "未找到最终注册表单或完成注册按钮"
+        + (f"（Turnstile 已尝试 {turnstile_attempts} 次）" if turnstile_attempts else "")
+    )
 
 
 def extract_visible_numbers(timeout=60):
