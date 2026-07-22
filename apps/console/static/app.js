@@ -681,10 +681,8 @@
           <span class="${statusClass(task.status)}">${escapeHtml(task.status)}</span>
         </div>
         <div class="task-meta-group">
-          <div class="task-subrow">执行次数 ${task.target_count}</div>
-          <div class="task-subrow">本地账号 ${task.account_count || 0}</div>
-          <div class="task-subrow">开始 ${escapeHtml(timing.startedAt)}</div>
-          <div class="task-subrow">用时 ${escapeHtml(timing.elapsedDisplay)} · ${escapeHtml(timing.accountsPerMinuteDisplay)}</div>
+          <div class="task-subrow"><span>执行次数 ${task.target_count}</span><span>本地账号 ${task.account_count || 0}</span></div>
+          <div class="task-subrow"><span>开始 ${escapeHtml(timing.startedAt)}</span><span>用时 ${escapeHtml(timing.elapsedDisplay)} · ${escapeHtml(timing.accountsPerMinuteDisplay)}</span></div>
         </div>
         <div class="task-card-progress">
           <div class="task-row">
