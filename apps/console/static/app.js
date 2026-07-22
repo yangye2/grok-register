@@ -14,6 +14,7 @@
     accountSub2Filter: "all",
     accountGrok2Filter: "all",
     accountSsoFilter: "all",
+    accountDeletedFilter: "active", // active | deleted
     accountPage: 1,
     accountPageSize: 20,
     accountTotal: 0,
@@ -52,6 +53,8 @@
   const accountsRefreshBtnEl = document.getElementById("accountsRefreshBtn");
   const accountsDownloadBtnEl = document.getElementById("accountsDownloadBtn");
   const accountsDeleteBtnEl = document.getElementById("accountsDeleteBtn");
+  const accountsRestoreBtnEl = document.getElementById("accountsRestoreBtn");
+  const accountsRecycleBtnEl = document.getElementById("accountsRecycleBtn");
   const accountsCpaBatchBtnEl = document.getElementById("accountsCpaBatchBtn");
   const accountsProbeBatchBtnEl = document.getElementById("accountsProbeBatchBtn");
   const accountsRefreshTokenBatchBtnEl = document.getElementById("accountsRefreshTokenBatchBtn");
@@ -897,9 +900,10 @@
     if (state.accountGrok2Filter && state.accountGrok2Filter !== "all") {
       params.set("grok2", state.accountGrok2Filter);
     }
-if (state.accountSsoFilter && state.accountSsoFilter !== "all") {
+    if (state.accountSsoFilter && state.accountSsoFilter !== "all") {
       params.set("sso_alive", state.accountSsoFilter);
     }
+    params.set("deleted", state.accountDeletedFilter === "deleted" ? "deleted" : "active");
     return params;
   }
 
@@ -1003,10 +1007,24 @@ function isCpaBusy(account) {
 
     const start = state.accountTotal ? ((state.accountPage - 1) * state.accountPageSize) + 1 : 0;
     const end = state.accountTotal ? Math.min(state.accountPage * state.accountPageSize, state.accountTotal) : 0;
-    accountsMetaEl.textContent = `筛选结果 ${state.accountTotal} 个，当前页 ${state.accounts.length} 个，已选择 ${state.selectedAccountIds.size} 个`;
+    const listModeLabel = state.accountDeletedFilter === "deleted" ? "回收站" : "账号列表";
+    accountsMetaEl.textContent = `${listModeLabel}：筛选结果 ${state.accountTotal} 个，当前页 ${state.accounts.length} 个，已选择 ${state.selectedAccountIds.size} 个`;
     if (metricAccountSelectedEl) metricAccountSelectedEl.textContent = String(state.selectedAccountIds.size);
     accountsDownloadBtnEl.disabled = state.selectedAccountIds.size === 0;
-    accountsDeleteBtnEl.disabled = state.selectedAccountIds.size === 0;
+    const inRecycleBin = state.accountDeletedFilter === "deleted";
+    accountsDeleteBtnEl.disabled = state.selectedAccountIds.size === 0 || inRecycleBin;
+    accountsDeleteBtnEl.textContent = "批量删除";
+    accountsDeleteBtnEl.classList.toggle("hidden", inRecycleBin);
+    if (accountsRestoreBtnEl) {
+      accountsRestoreBtnEl.disabled = state.selectedAccountIds.size === 0 || !inRecycleBin;
+      accountsRestoreBtnEl.classList.toggle("hidden", !inRecycleBin);
+      accountsRestoreBtnEl.textContent = "批量恢复";
+    }
+    if (accountsRecycleBtnEl) {
+      accountsRecycleBtnEl.textContent = inRecycleBin ? "返回账号列表" : "回收站";
+      accountsRecycleBtnEl.classList.toggle("button-primary", inRecycleBin);
+      accountsRecycleBtnEl.classList.toggle("button-neutral", !inRecycleBin);
+    }
     if (accountsLogBtnEl) accountsLogBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsClearFilteredBtnEl) accountsClearFilteredBtnEl.disabled = state.selectedAccountIds.size === 0;
     if (accountsProbeBatchBtnEl) accountsProbeBatchBtnEl.disabled = state.selectedAccountIds.size === 0;
@@ -1034,7 +1052,9 @@ function isCpaBusy(account) {
 
     if (!state.accounts.length) {
       accountsTableBodyEl.innerHTML = "";
-      accountsEmptyEl.textContent = state.accountTotal ? "当前页没有账号" : "当前筛选条件下没有账号";
+      accountsEmptyEl.textContent = state.accountDeletedFilter === "deleted"
+        ? (state.accountTotal ? "当前页没有已删除账号" : "回收站为空")
+        : (state.accountTotal ? "当前页没有账号" : "当前筛选条件下没有账号");
       accountsEmptyEl.classList.remove("hidden");
       return;
     }
@@ -1056,10 +1076,15 @@ function isCpaBusy(account) {
         <td class="account-grok2-status">${statusPill(flagLabel(account.grok2), flagTone(account.grok2), account.grok2_updated_at || "")}</td>
         <td title="${escapeHtml(account.token_checked_at || "")}">${escapeHtml(account.token_expires_at || "-")}</td>
         <td class="account-actions">
+          ${state.accountDeletedFilter === "deleted" ? `
+          <button class="button button-small button-success" type="button" data-restore-account-id="${account.id}" title="从回收站恢复">恢复</button>
+          <button class="button button-danger button-small" type="button" data-purge-account-id="${account.id}" title="永久删除，不可恢复">彻底删除</button>
+          ` : `
           <button class="button button-small button-warn" type="button" data-refresh-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""} title="优先 RT 续期">续期</button>
           <button class="button button-small button-success" type="button" data-probe-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""} title="检测是否可用">测活</button>
           <button class="button button-small button-info" type="button" data-oauth-account-id="${account.id}" ${isCpaBusy(account) ? "disabled" : ""} title="完整 SSO OAuth 重建">OAuth</button>
-          <button class="button button-danger button-small" type="button" data-delete-account-id="${account.id}">删除</button>
+          <button class="button button-danger button-small" type="button" data-delete-account-id="${account.id}" title="移入回收站，可恢复">删除</button>
+          `}
         </td>
       </tr>
     `).join("");
@@ -1108,9 +1133,31 @@ function isCpaBusy(account) {
       button.addEventListener("click", async () => {
         const account = state.accounts.find((item) => item.id === Number(button.dataset.deleteAccountId));
         if (!account) return;
-        const confirmed = window.confirm(`确认删除账号 ${account.email} 吗？`);
+        const confirmed = window.confirm(`确认将账号 ${account.email} 移入回收站吗？\n可在回收站中恢复。`);
         if (!confirmed) return;
         await fetchJson(`/api/accounts/${account.id}`, { method: "DELETE" });
+        state.selectedAccountIds.delete(account.id);
+        await refreshAccounts();
+      });
+    });
+
+    accountsTableBodyEl.querySelectorAll("[data-restore-account-id]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const account = state.accounts.find((item) => item.id === Number(button.dataset.restoreAccountId));
+        if (!account) return;
+        await fetchJson(`/api/accounts/${account.id}/restore`, { method: "POST" });
+        state.selectedAccountIds.delete(account.id);
+        await refreshAccounts();
+      });
+    });
+
+    accountsTableBodyEl.querySelectorAll("[data-purge-account-id]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const account = state.accounts.find((item) => item.id === Number(button.dataset.purgeAccountId));
+        if (!account) return;
+        const confirmed = window.confirm(`确认永久删除账号 ${account.email} 吗？\n此操作不可恢复。`);
+        if (!confirmed) return;
+        await fetchJson(`/api/accounts/${account.id}/purge`, { method: "DELETE" });
         state.selectedAccountIds.delete(account.id);
         await refreshAccounts();
       });
@@ -1979,17 +2026,46 @@ accountsDownloadBtnEl.addEventListener("click", async () => {
   });
   accountsDeleteBtnEl.addEventListener("click", async () => {
     const ids = Array.from(state.selectedAccountIds);
-    if (!ids.length) {
+    if (!ids.length || state.accountDeletedFilter === "deleted") {
       return;
     }
-    const confirmed = window.confirm(`确认批量删除 ${ids.length} 个账号吗？`);
+    const confirmed = window.confirm(`确认将 ${ids.length} 个账号移入回收站吗？\n可在回收站中恢复。`);
     if (!confirmed) return;
-    for (const id of ids) {
-      await fetchJson(`/api/accounts/${id}`, { method: "DELETE" });
-      state.selectedAccountIds.delete(id);
-    }
+    await fetchJson("/api/accounts/batch-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ account_ids: ids }),
+    });
+    ids.forEach((id) => state.selectedAccountIds.delete(id));
     await refreshAccounts();
   });
+
+  if (accountsRestoreBtnEl) {
+    accountsRestoreBtnEl.addEventListener("click", async () => {
+      const ids = Array.from(state.selectedAccountIds);
+      if (!ids.length || state.accountDeletedFilter !== "deleted") {
+        return;
+      }
+      const confirmed = window.confirm(`确认从回收站恢复 ${ids.length} 个账号吗？`);
+      if (!confirmed) return;
+      await fetchJson("/api/accounts/batch-restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account_ids: ids }),
+      });
+      ids.forEach((id) => state.selectedAccountIds.delete(id));
+      await refreshAccounts();
+    });
+  }
+
+  if (accountsRecycleBtnEl) {
+    accountsRecycleBtnEl.addEventListener("click", async () => {
+      state.accountDeletedFilter = state.accountDeletedFilter === "deleted" ? "active" : "deleted";
+      state.accountPage = 1;
+      state.selectedAccountIds = new Set();
+      await refreshAccounts();
+    });
+  }
   accountsSearchInputEl.addEventListener("input", () => {
     state.accountSearch = accountsSearchInputEl.value;
     state.accountPage = 1;

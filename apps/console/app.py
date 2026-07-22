@@ -292,9 +292,15 @@ def init_db() -> None:
             ("grok2_updated_at", "TEXT"),
             ("h5", "INTEGER NOT NULL DEFAULT 0"),
             ("h5_updated_at", "TEXT"),
+            ("deleted", "INTEGER NOT NULL DEFAULT 0"),
+            ("deleted_at", "TEXT"),
         ):
             if name not in columns:
                 conn.execute(f"ALTER TABLE accounts ADD COLUMN {name} {definition}")
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_accounts_deleted ON accounts(deleted, created_at DESC, id DESC)"
+        )
 
         conn.execute(
             """
@@ -1564,7 +1570,10 @@ def sync_active_account_records() -> None:
 
 
 def account_count_for_task(task_id: int) -> int:
-    row = fetch_one("SELECT COUNT(*) AS c FROM accounts WHERE task_id = ?", (task_id,))
+    row = fetch_one(
+        "SELECT COUNT(*) AS c FROM accounts WHERE task_id = ? AND COALESCE(deleted, 0) = 0",
+        (task_id,),
+    )
     return int(row["c"]) if row else 0
 
 
@@ -1572,7 +1581,7 @@ def account_success_stats(task_id: int) -> dict[str, Any]:
     """Registered success count from accounts table (source of truth)."""
     count = account_count_for_task(task_id)
     last = fetch_one(
-        "SELECT email FROM accounts WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+        "SELECT email FROM accounts WHERE task_id = ? AND COALESCE(deleted, 0) = 0 ORDER BY id DESC LIMIT 1",
         (task_id,),
     )
     last_email = str(last["email"] or "") if last is not None else ""
@@ -1713,6 +1722,8 @@ def serialize_account(row: sqlite3.Row) -> dict[str, Any]:
         "grok2_updated_at": row_get(row, "grok2_updated_at", "") or "",
         "h5": bool(row_get(row, "h5", 0) or 0),
         "h5_updated_at": row_get(row, "h5_updated_at", "") or "",
+        "deleted": bool(row_get(row, "deleted", 0) or 0),
+        "deleted_at": row_get(row, "deleted_at", "") or "",
     }
 
 
@@ -3272,7 +3283,7 @@ def schedule_post_task_account_maintain(task_id: int) -> dict[str, Any]:
 
     sync_account_records_for_task(row)
     rows = fetch_all(
-        "SELECT id, email, sso, cpa_path FROM accounts WHERE task_id = ? ORDER BY id ASC",
+        "SELECT id, email, sso, cpa_path FROM accounts WHERE task_id = ? AND COALESCE(deleted, 0) = 0 ORDER BY id ASC",
         (task_id,),
     )
     account_ids = [int(r["id"]) for r in rows or []]
@@ -3353,6 +3364,9 @@ def enqueue_cpa_jobs(account_ids: list[int], mode: str) -> dict[str, Any]:
         row = fetch_one("SELECT * FROM accounts WHERE id = ?", (account_id,))
         if row is None:
             rejected.append({"id": account_id, "reason": "账号不存在"})
+            continue
+        if int(row_get(row, "deleted", 0) or 0):
+            rejected.append({"id": account_id, "reason": "账号已在回收站"})
             continue
         email = str(row_get(row, "email", "") or "").strip()
         if mode in {"push_only", "push_sub2api"}:
@@ -3493,9 +3507,19 @@ def build_accounts_where_clause(
     sso_alive: str | None = None,
     sub2_status: str | None = None,
     grok2: str | None = None,
+    deleted: str | None = None,
 ) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
+
+    deleted_filter = (deleted or "active").strip().lower()
+    if deleted_filter in {"deleted", "trash", "recycle", "1", "true", "yes"}:
+        clauses.append("COALESCE(deleted, 0) = 1")
+    elif deleted_filter in {"all", "any"}:
+        pass
+    else:
+        # default: only active accounts
+        clauses.append("COALESCE(deleted, 0) = 0")
 
     if task_id is not None:
         clauses.append("task_id = ?")
@@ -4253,6 +4277,7 @@ def account_task_options() -> dict[str, Any]:
         """
         SELECT task_id, MAX(task_name) AS task_name, COUNT(*) AS c
         FROM accounts
+        WHERE COALESCE(deleted, 0) = 0
         GROUP BY task_id
         ORDER BY task_id DESC
         """
@@ -4292,13 +4317,21 @@ def list_accounts(
     sso_alive: str = Query(""),
     sub2_status: str = Query(""),
     grok2: str = Query(""),
+    deleted: str = Query("active"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
 ) -> dict[str, Any]:
     sync_all_account_records()
     _heal_stale_busy_accounts()
     where_clause, where_params = build_accounts_where_clause(
-        task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive, sub2_status=sub2_status, grok2=grok2
+        task_id,
+        search,
+        cpa_status=cpa_status,
+        token_status=token_status,
+        sso_alive=sso_alive,
+        sub2_status=sub2_status,
+        grok2=grok2,
+        deleted=deleted,
     )
     count_row = fetch_one(
         f"SELECT COUNT(*) AS c FROM accounts{where_clause}",
@@ -4373,11 +4406,19 @@ def list_account_ids(
     sso_alive: str = Query(""),
     sub2_status: str = Query(""),
     grok2: str = Query(""),
+    deleted: str = Query("active"),
 ) -> dict[str, Any]:
     """Return all account ids matching current filters (for cross-page select-all)."""
     sync_all_account_records()
     where_clause, where_params = build_accounts_where_clause(
-        task_id, search, cpa_status=cpa_status, token_status=token_status, sso_alive=sso_alive, sub2_status=sub2_status, grok2=grok2
+        task_id,
+        search,
+        cpa_status=cpa_status,
+        token_status=token_status,
+        sso_alive=sso_alive,
+        sub2_status=sub2_status,
+        grok2=grok2,
+        deleted=deleted,
     )
     rows = fetch_all(
         f"SELECT id FROM accounts{where_clause} ORDER BY created_at DESC, id DESC",
@@ -4507,6 +4548,56 @@ def export_cpa_queue_results() -> Any:
 
 
 
+class AccountBatchIdsPayload(BaseModel):
+    account_ids: list[int] = Field(default_factory=list)
+
+
+@app.post("/api/accounts/batch-delete")
+def batch_soft_delete_accounts(payload: AccountBatchIdsPayload) -> dict[str, Any]:
+    ids = sorted({int(x) for x in (payload.account_ids or []) if int(x) > 0})
+    if not ids:
+        return {"ok": True, "deleted_count": 0, "skipped": []}
+    deleted_count = 0
+    skipped: list[dict[str, Any]] = []
+    stamp = now_iso()
+    for account_id in ids:
+        row = fetch_one("SELECT id, deleted FROM accounts WHERE id = ?", (account_id,))
+        if row is None:
+            skipped.append({"id": account_id, "reason": "not_found"})
+            continue
+        if int(row_get(row, "deleted", 0) or 0):
+            skipped.append({"id": account_id, "reason": "already_deleted"})
+            continue
+        execute_no_return(
+            "UPDATE accounts SET deleted = 1, deleted_at = ? WHERE id = ?",
+            (stamp, account_id),
+        )
+        deleted_count += 1
+    return {"ok": True, "deleted_count": deleted_count, "skipped": skipped}
+
+
+@app.post("/api/accounts/batch-restore")
+def batch_restore_accounts(payload: AccountBatchIdsPayload) -> dict[str, Any]:
+    ids = sorted({int(x) for x in (payload.account_ids or []) if int(x) > 0})
+    if not ids:
+        return {"ok": True, "restored_count": 0, "skipped": []}
+    restored_count = 0
+    skipped: list[dict[str, Any]] = []
+    for account_id in ids:
+        row = fetch_one("SELECT id, deleted FROM accounts WHERE id = ?", (account_id,))
+        if row is None:
+            skipped.append({"id": account_id, "reason": "not_found"})
+            continue
+        if not int(row_get(row, "deleted", 0) or 0):
+            skipped.append({"id": account_id, "reason": "already_active"})
+            continue
+        execute_no_return(
+            "UPDATE accounts SET deleted = 0, deleted_at = NULL WHERE id = ?",
+            (account_id,),
+        )
+        restored_count += 1
+    return {"ok": True, "restored_count": restored_count, "skipped": skipped}
+
 @app.get("/api/accounts/{account_id}")
 def get_account(account_id: int) -> dict[str, Any]:
     sync_all_account_records()
@@ -4515,10 +4606,39 @@ def get_account(account_id: int) -> dict[str, Any]:
 
 @app.delete("/api/accounts/{account_id}")
 def delete_account(account_id: int) -> dict[str, Any]:
+    """Soft-delete account into recycle bin (keeps DB row for restore)."""
     row = account_row(account_id)
+    if int(row_get(row, "deleted", 0) or 0):
+        return {"ok": True, "already_deleted": True, "account": serialize_account(row)}
+    # Keep source_file record; soft-deleted accounts can be restored from recycle bin.
+    execute_no_return(
+        "UPDATE accounts SET deleted = 1, deleted_at = ? WHERE id = ?",
+        (now_iso(), account_id),
+    )
+    return {"ok": True, "deleted": True, "account": serialize_account(account_row(account_id))}
+
+
+@app.post("/api/accounts/{account_id}/restore")
+def restore_account(account_id: int) -> dict[str, Any]:
+    row = account_row(account_id)
+    if not int(row_get(row, "deleted", 0) or 0):
+        return {"ok": True, "already_active": True, "account": serialize_account(row)}
+    execute_no_return(
+        "UPDATE accounts SET deleted = 0, deleted_at = NULL WHERE id = ?",
+        (account_id,),
+    )
+    return {"ok": True, "restored": True, "account": serialize_account(account_row(account_id))}
+
+
+@app.delete("/api/accounts/{account_id}/purge")
+def purge_account(account_id: int) -> dict[str, Any]:
+    """Permanently remove a soft-deleted account (recycle-bin only)."""
+    row = account_row(account_id)
+    if not int(row_get(row, "deleted", 0) or 0):
+        raise HTTPException(status_code=400, detail="Only soft-deleted accounts can be purged")
     remove_account_from_source_file(row)
     execute_no_return("DELETE FROM accounts WHERE id = ?", (account_id,))
-    return {"ok": True}
+    return {"ok": True, "purged": True}
 
 @app.post("/api/accounts/{account_id}/cpa")
 def authorize_account_cpa(account_id: int) -> dict[str, Any]:

@@ -511,6 +511,8 @@ button {
   background: var(--panel-strong);
   width: 100%;
   max-width: 100%;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .account-cpa-log-panel {
@@ -535,8 +537,8 @@ button {
 }
 
 .accounts-table {
-  width: max-content;
-  min-width: 1380px;
+  width: 100%;
+  min-width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
 }
@@ -568,25 +570,38 @@ button {
 .select-col,
 .accounts-table th:nth-child(1),
 .accounts-table td:nth-child(1) {
-  width: 32px;
-  min-width: 32px;
-  max-width: 32px;
+  width: 36px;
+  min-width: 36px;
+  max-width: 36px;
   text-align: center;
   padding-left: 4px;
   padding-right: 4px;
 }
 
+/* email takes remaining space so table fills container width */
 .accounts-table th:nth-child(2),
-.accounts-table td:nth-child(2) { width: 190px; } /* email */
+.accounts-table td:nth-child(2) {
+  width: auto;
+  min-width: 160px;
+} /* email */
 
 .accounts-table th:nth-child(3),
-.accounts-table td:nth-child(3) { width: 120px; } /* password */
+.accounts-table td:nth-child(3) {
+  width: 110px;
+  min-width: 96px;
+} /* password */
 
 .accounts-table th:nth-child(4),
-.accounts-table td:nth-child(4) { width: 130px; } /* sso */
+.accounts-table td:nth-child(4) {
+  width: 120px;
+  min-width: 100px;
+} /* sso */
 
 .accounts-table th:nth-child(5),
-.accounts-table td:nth-child(5) { width: 150px; } /* created */
+.accounts-table td:nth-child(5) {
+  width: 140px;
+  min-width: 120px;
+} /* created */
 
 .accounts-table th:nth-child(6),
 .accounts-table td:nth-child(6),
@@ -597,25 +612,37 @@ button {
 .accounts-table th:nth-child(9),
 .accounts-table td:nth-child(9),
 .accounts-table th:nth-child(10),
-.accounts-table td:nth-child(10),
-.accounts-table th:nth-child(11),
-.accounts-table td:nth-child(11) {
-  width: 88px;
-  min-width: 88px;
+.accounts-table td:nth-child(10) {
+  width: 78px;
+  min-width: 72px;
 } /* SSO alive / Token / CPA / Sub2 / Grok2 */
 
-.accounts-table th:nth-child(12),
-.accounts-table td:nth-child(12) { width: 150px; } /* expire */
+.accounts-table th:nth-child(11),
+.accounts-table td:nth-child(11) {
+  width: 140px;
+  min-width: 120px;
+} /* expire */
 
-.accounts-table th:nth-child(13),
-.accounts-table td:nth-child(13) {
-  width: 210px;
-  min-width: 210px;
-  max-width: 230px;
+.accounts-table th:nth-child(12),
+.accounts-table td:nth-child(12) {
+  width: 268px;
+  min-width: 268px;
+  max-width: none;
   overflow: visible;
   white-space: nowrap;
   text-overflow: clip;
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: var(--panel-strong);
+  box-shadow: -8px 0 12px -10px rgba(15, 23, 42, 0.35);
 } /* actions */
+
+.accounts-table th:nth-child(12) {
+  z-index: 3;
+  background: rgba(148, 163, 184, 0.12);
+  backdrop-filter: blur(6px);
+}
 
 
 
@@ -636,7 +663,14 @@ button {
   max-width: 80px;
 }
 
-.account-actions { display: flex; gap: 8px; white-space: nowrap; }
+.account-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  align-items: center;
+  justify-content: flex-start;
+}
 
 .summary-grid,
 .detail-grid {

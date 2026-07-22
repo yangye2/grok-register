@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Grok Register Console</title>
-  <link rel="stylesheet" href="/static/app.css?v=1784514892">
+  <link rel="stylesheet" href="/static/app.css?v=1784517000">
 </head>
 <body>
   <div class="shell">
@@ -144,6 +144,8 @@
                 <button id="accountsCpaExportBtn" class="button button-teal" type="button" disabled title="选中账号导出 txt：email----password----sso">导出账号</button>
                 <button id="accountsDownloadBtn" class="button button-teal" type="button">导出SSO</button>
                 <button id="accountsDeleteBtn" class="button button-danger" type="button">批量删除</button>
+                <button id="accountsRestoreBtn" class="button button-success hidden" type="button" disabled title="从回收站恢复选中账号">批量恢复</button>
+                <button id="accountsRecycleBtn" class="button button-neutral" type="button" title="查看已删除账号，可恢复">回收站</button>
               </div>
             </div>
           </div>
@@ -757,6 +759,6 @@
   <script>
     window.__DEFAULTS__ = {{ defaults|safe }};
   </script>
-  <script src="/static/app.js?v=1784515600" charset="utf-8"></script>
+  <script src="/static/app.js?v=1784517000" charset="utf-8"></script>
 </body>
 </html>
